@@ -309,6 +309,12 @@ class ForwardBatch:
     tbo_parent_token_range: Optional[Tuple[int, int]] = None
     tbo_children: Optional[List[ForwardBatch]] = None
 
+    # For delay-pattern sampling
+    current_generation_step: int = 0
+    truncated_input_ids: Optional[Union[List[List[int]], List[List[List[int]]]]] = None
+    needs_additional_steps: torch.Tensor = None
+    unfinished_sequences: torch.Tensor = None
+
     @classmethod
     def init_new(
         cls,
@@ -455,6 +461,13 @@ class ForwardBatch:
         # Init lora information
         if model_runner.server_args.enable_lora:
             model_runner.lora_manager.prepare_lora_batch(ret)
+
+        # For delay-pattern sampling
+        if model_runner.server_args.delay_pattern:
+            ret.current_generation_step = batch.current_generation_step
+            ret.truncated_input_ids = batch.truncated_input_ids
+            ret.needs_additional_steps = batch.needs_additional_steps
+            ret.unfinished_sequences = batch.unfinished_sequences
 
         TboForwardBatchPreparer.prepare(
             ret, is_draft_worker=model_runner.is_draft_worker

@@ -458,6 +458,8 @@ class RadixCache(BasePrefixCache):
     def _match_prefix_helper(self, node: TreeNode, key: RadixKey):
         node.last_access_time = time.monotonic()
 
+        if isinstance(key.token_ids[0], list):
+            key.token_ids = [tuple(x) for x in key.token_ids]
         child_key = self.get_child_key_fn(key)
 
         value = []
@@ -503,6 +505,19 @@ class RadixCache(BasePrefixCache):
         node.last_access_time = time.monotonic()
         if len(key) == 0:
             return 0
+        elif isinstance(key.token_ids[0], list):
+            key.token_ids = [tuple(x) for x in key.token_ids]
+        elif isinstance(key.token_ids[0], int) and isinstance(key.token_ids[-1], list):
+            key.token_ids = [
+                tuple(x) if isinstance(x, list) else x for x in key.token_ids
+            ]
+        # Only one branch will throw an exception during health check.
+        # The reason is that the input_ids for health check are 10, 11, 12,
+        # while the output tokens are in the form of [x * channels] * n,
+        # which causes a mix of integers and lists in the key and thus leads to the exception.
+        # Outside of health check scenarios, in all normal operating conditions,
+        # there will be no mixing of lists and integers in the key.
+        # Since this is the only special case, a handling method for the second branch can be adopted.
 
         child_key = self.get_child_key_fn(key)
 

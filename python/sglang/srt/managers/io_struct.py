@@ -66,7 +66,7 @@ class GenerateReqInput:
     # The input prompt. It can be a single prompt or a batch of prompts.
     text: Optional[Union[List[str], str]] = None
     # The token ids for text; one can specify either text or input_ids
-    input_ids: Optional[Union[List[List[int]], List[int]]] = None
+    input_ids: Optional[Union[List[List[List[int]]], List[List[int]], List[int]]] = None
     # The embeddings for input_ids; one can specify either text or input_ids or input_embeds.
     input_embeds: Optional[Union[List[List[List[float]]], List[List[float]]]] = None
     # The image input. It can be an image instance, file name, URL, or base64 encoded string.
@@ -146,6 +146,9 @@ class GenerateReqInput:
     # For custom metric labels
     custom_labels: Optional[Dict[str, str]] = None
 
+    # Multi-channel input support
+    multi_channel: Optional[bool] = None
+
     def contains_mm_input(self) -> bool:
         return (
             has_valid_data(self.image_data)
@@ -201,7 +204,9 @@ class GenerateReqInput:
         elif self.input_ids is not None:
             if len(self.input_ids) == 0:
                 raise ValueError("input_ids cannot be empty.")
-            if isinstance(self.input_ids[0], int):
+            if isinstance(self.input_ids[0], int) or (
+                self.multi_channel and isinstance(self.input_ids[0][0], int)
+            ):
                 self.is_single = True
                 self.batch_size = 1
             else:
@@ -801,7 +806,7 @@ class BatchTokenIDOut:
     decode_ids: List[int]
     read_offsets: List[int]
     # Only used when `--skip-tokenizer-init` is on
-    output_ids: Optional[List[int]]
+    output_ids: Optional[Union[List[int], List[List[int]]]]
     # Detokenization configs
     skip_special_tokens: List[bool]
     spaces_between_special_tokens: List[bool]

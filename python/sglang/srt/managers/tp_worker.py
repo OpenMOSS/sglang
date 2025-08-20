@@ -271,6 +271,8 @@ class TpModelWorker:
                     )
             else:
                 next_token_ids = self.model_runner.sample(logits_output, forward_batch)
+                if self.model_runner.server_args.delay_pattern:
+                    model_worker_batch.needs_additional_steps, model_worker_batch.unfinished_sequences = forward_batch.needs_additional_steps, forward_batch.unfinished_sequences
 
             return logits_output, next_token_ids, can_run_cuda_graph
         else:

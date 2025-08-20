@@ -1885,7 +1885,7 @@ class ModelRunner:
         # Handle tensor boolean operations properly
         mask = (needs_additional_steps > 0) & (needs_additional_steps < channels - 1)
         if torch.any(mask):
-            next_token_ids[mask, 0] = self.model_config.hf_eos_token_id
+            next_token_ids[mask, 0] = next(iter(self.model_config.hf_eos_token_id))
             for i in range(1, channels):
                 channel_mask = mask & (needs_additional_steps < channels - i)
                 if torch.any(channel_mask):
@@ -1893,7 +1893,7 @@ class ModelRunner:
 
         for i in range(channels):
             pddp = (
-                self.model_config.hf_eos_token_id
+                next(iter(self.model_config.hf_eos_token_id))
                 if i == 0
                 else self.model_config.pad_token[i]
             )
@@ -1912,7 +1912,6 @@ class ModelRunner:
         )
         unfinished_sequences = unfinished_sequences & ~stopping
         unfinished_sequences = unfinished_sequences | (needs_additional_steps > 0)
-
         return needs_additional_steps, unfinished_sequences
 
     def sample(

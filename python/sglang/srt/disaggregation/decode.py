@@ -612,26 +612,43 @@ class DecodeTransferQueue:
                     output_hidden_states,
                 ) = self.metadata_buffers.get_buf(idx)
 
-                decode_req.req.output_ids.append(output_id[0].item())
                 if not self.spec_algorithm.is_none():
                     decode_req.req.hidden_states_tensor = output_hidden_states
-                if decode_req.req.return_logprob:
-                    decode_req.req.output_token_logprobs_val.append(
-                        output_token_logprobs_val[0].item()
+
+                if self.scheduler.server_args.multi_channel:
+                    decode_req.req.output_ids.append(
+                        output_id[: self.scheduler.model_config.channels].tolist()
                     )
-                    decode_req.req.output_token_logprobs_idx.append(
-                        output_token_logprobs_idx[0].item()
-                    )
-                    decode_req.req.output_top_logprobs_val.append(
-                        output_top_logprobs_val[
-                            : decode_req.req.top_logprobs_num
-                        ].tolist()
-                    )
-                    decode_req.req.output_top_logprobs_idx.append(
-                        output_top_logprobs_idx[
-                            : decode_req.req.top_logprobs_num
-                        ].tolist()
-                    )
+                    if decode_req.req.return_logprob:
+                        decode_req.req.output_token_logprobs_val.append(
+                            output_token_logprobs_val[
+                                : self.scheduler.model_config.channels
+                            ].tolist()
+                        )
+                        decode_req.req.output_token_logprobs_idx.append(
+                            output_token_logprobs_idx[
+                                : self.scheduler.model_config.channels
+                            ].tolist()
+                        )
+                else:
+                    decode_req.req.output_ids.append(output_id[0].item())
+                    if decode_req.req.return_logprob:
+                        decode_req.req.output_token_logprobs_val.append(
+                            output_token_logprobs_val[0].item()
+                        )
+                        decode_req.req.output_token_logprobs_idx.append(
+                            output_token_logprobs_idx[0].item()
+                        )
+                        decode_req.req.output_top_logprobs_val.append(
+                            output_top_logprobs_val[
+                                : decode_req.req.top_logprobs_num
+                            ].tolist()
+                        )
+                        decode_req.req.output_top_logprobs_idx.append(
+                            output_top_logprobs_idx[
+                                : decode_req.req.top_logprobs_num
+                            ].tolist()
+                        )
 
                 if hasattr(decode_req.kv_receiver, "clear"):
                     decode_req.kv_receiver.clear()

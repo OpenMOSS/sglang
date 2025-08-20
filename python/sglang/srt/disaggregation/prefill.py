@@ -405,17 +405,32 @@ class SchedulerDisaggregationPrefillMixin:
                 req.output_ids.append(next_token_id)
                 self.tree_cache.cache_unfinished_req(req)  # update the tree and lock
                 self.disagg_prefill_inflight_queue.append(req)
-                if (
-                    logits_output is not None
-                    and logits_output.hidden_states is not None
-                ):
-                    last_hidden_index = (
-                        hidden_state_offset + extend_input_len_per_req[i] - 1
-                    )
-                    req.hidden_states_tensor = (
-                        logits_output.hidden_states[last_hidden_index].cpu().clone()
-                    )
-                    hidden_state_offset += extend_input_len_per_req[i]
+                if logits_output is not None:
+                    if self.server_args.multi_channel:
+                        if all(
+                            output.hidden_states is not None for output in logits_output
+                        ):
+                            last_hidden_index = (
+                                hidden_state_offset + extend_input_len_per_req[i] - 1
+                            )
+                            req.hidden_states_tensor = torch.stack(
+                                [
+                                    output.hidden_states[last_hidden_index]
+                                    .cpu()
+                                    .clone()
+                                    for output in logits_output
+                                ],
+                                dim=0,
+                            )
+                            hidden_state_offset += extend_input_len_per_req[i]
+                    elif logits_output.hidden_states is not None:
+                        last_hidden_index = (
+                            hidden_state_offset + extend_input_len_per_req[i] - 1
+                        )
+                        req.hidden_states_tensor = (
+                            logits_output.hidden_states[last_hidden_index].cpu().clone()
+                        )
+                        hidden_state_offset += extend_input_len_per_req[i]
                 else:
                     req.hidden_states_tensor = None
                 if req.return_logprob:

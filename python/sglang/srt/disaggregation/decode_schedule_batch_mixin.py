@@ -34,6 +34,18 @@ class ScheduleBatchDisaggregationDecodeMixin:
         pre_lens = []
         req_pool_indices = []
 
+        if self.model_config.channels:
+            truncated_input_ids = [r.truncated_input_ids for r in reqs]
+            truncated_input_ids_tensor = torch.tensor(
+                sum(truncated_input_ids, []), dtype=torch.int64
+            ).to(self.device, non_blocking=True)
+            self.needs_additional_steps = -1 * torch.ones(
+                len(truncated_input_ids), dtype=torch.int64
+            ).to(self.device, non_blocking=True)
+            self.unfinished_sequences = torch.ones(
+                len(truncated_input_ids), dtype=torch.long
+            ).to(self.device, non_blocking=True)
+
         # Pre-calculate total size
         total_size = sum(req.extend_input_len for req in reqs)
         out_cache_loc = torch.empty(total_size, dtype=torch.int64, device=self.device)
@@ -92,6 +104,9 @@ class ScheduleBatchDisaggregationDecodeMixin:
         self.extend_logprob_start_lens = [r.extend_logprob_start_len for r in reqs]
         self.extend_input_logprob_token_ids = extend_input_logprob_token_ids
         self.multimodal_inputs = [r.multimodal_inputs for r in reqs]
+
+        if self.model_config.channels:
+            self.truncated_input_ids = truncated_input_ids_tensor
 
         # Build sampling info
         self.sampling_info = SamplingBatchInfo.from_schedule_batch(

@@ -230,7 +230,55 @@ class MossTTSDMultimodalProcessor(BaseMultimodalProcessor):
                 token_tensor = token_tensor[:, :, : self.max_channels]
 
         # Decode tokens to text and audio
-        text_list, audio_list = self.moss_processor.batch_decode(token_tensor)
+        try:
+            text_list, audio_list = self.moss_processor.batch_decode(token_tensor)
+        except Exception as e:
+            # NOTE(gy): sanitize channel-0 indices and decode manually to avoid out-of-range errors
+            logger.warning(
+                f"batch_decode failed ({e}); falling back to safe decode path."
+            )
+            try:
+                # Shift back to per-timestep layout and un-offset channel-0
+                normal = self.moss_processor.shifting_outputs(
+                    token_tensor,
+                    self.moss_processor.speech_token_range,
+                    self.max_channels,
+                )
+                # Clamp channel-0 codes into valid range [0, 1023]
+                normal[..., 0] = torch.clamp(normal[..., 0], min=0, max=1023)
+
+                # Find valid audio spans where all non-text channels are present
+                spans = self.moss_processor._find_max_valid_positions(
+                    normal, self.moss_processor.audio_pad_token_id
+                )
+
+                # Decode each fragment independently using exact code lengths to avoid tail noise
+                decode_audio = []
+                for seq_frags in spans:
+                    if len(seq_frags):
+                        seq_audio = []
+                        for f in seq_frags:
+                            # f: [time, channels] -> [channels, batch=1, time]
+                            codes = f.permute(1, 0).unsqueeze(1).contiguous()
+                            code_len = torch.tensor(
+                                [f.shape[0]], dtype=torch.long, device=f.device
+                            )
+                            out = self.moss_processor.audio_tokenizer._decode(
+                                codes, codes_lengths=code_len
+                            )
+                            seq_audio.append(out["audio_values"][0])  # (1, T)
+                        decode_audio.append(seq_audio)
+                    else:
+                        decode_audio.append([])
+
+                # Decode text from channel-0 directly (keep original behavior)
+                text_list = self.moss_processor.tokenizer.batch_decode(
+                    token_tensor[:, :, 0]
+                )
+                audio_list = decode_audio
+            except Exception as ee:
+                logger.error(f"Safe decode path also failed: {ee}")
+                raise
 
         # Get first result
         decoded_text = text_list[0] if text_list else ""
@@ -242,7 +290,9 @@ class MossTTSDMultimodalProcessor(BaseMultimodalProcessor):
             audio_fragments = audio_list[0]
             if audio_fragments:
                 # Combine all fragments
-                combined_audio = torch.cat([frag for frag in audio_fragments], dim=-1)
+                combined_audio = torch.cat(
+                    [frag.detach().cpu() for frag in audio_fragments], dim=-1
+                )
 
                 # Convert to bytes (WAV format)
                 buffer = io.BytesIO()

@@ -485,32 +485,17 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
                 _global_state.tokenizer_manager.server_args.multi_channel
                 and _global_state.tokenizer_manager.server_args.delay_pattern
             ):
-                # Get XY tokenizer path from server args
-                xy_tokenizer_path = (
-                    _global_state.tokenizer_manager.server_args.xy_tokenizer_path
-                )
-
-                if not xy_tokenizer_path:
+                if not _global_state.tokenizer_manager.server_args.xy_tokenizer_path:
                     return _create_error_response(
                         ValueError(
                             "MOSS-TTSD synthesis requires XY tokenizer path. "
                             "Please provide --xy-tokenizer-path when starting the server."
                         )
                     )
-
                 # Initialize MOSS-TTSD processor
-                # Get the underlying processor from tokenizer manager
-                from transformers import AutoProcessor
-
-                _processor = AutoProcessor.from_pretrained(
-                    _global_state.tokenizer_manager.server_args.model_path,
-                    trust_remote_code=True,
-                )
-
                 _global_state.moss_ttsd_processor = MossTTSDMultimodalProcessor(
                     hf_config=_global_state.tokenizer_manager.model_config.hf_config,
                     server_args=_global_state.tokenizer_manager.server_args,
-                    _processor=_processor,
                 )
             else:
                 return _create_error_response(
@@ -551,18 +536,8 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
         # MOSS-TTSD needs the FULL sequence (prompt + generated) for proper decoding
         generated_tokens = result.get("output_ids", [])
 
-        # Combine input_ids (prompt) with generated tokens to get the full sequence
-        # input_ids is a 2D list: [time, channels]
-        # generated_tokens should also be 2D
-        if generated_tokens:
-            # Concatenate along the time dimension (axis 0)
-            full_sequence = input_ids + generated_tokens
-        else:
-            # If no tokens were generated, use input_ids only
-            full_sequence = input_ids
-
         decoded_text, audio_bytes = _global_state.moss_ttsd_processor.postprocess(
-            full_sequence
+            generated_tokens
         )
 
         # Prepare response

@@ -32,7 +32,6 @@ class MossTTSDMultimodalProcessor(BaseMultimodalProcessor):
         self,
         hf_config,
         server_args,
-        _processor,
         transport_mode="vllm_2_sglang",
         *args,
         **kwargs,
@@ -45,9 +44,6 @@ class MossTTSDMultimodalProcessor(BaseMultimodalProcessor):
             _processor: The underlying MossTTSDProcessor instance
             transport_mode: Transport mode for multimodal data
         """
-        super().__init__(
-            hf_config, server_args, _processor, transport_mode, *args, **kwargs
-        )
 
         self.model_path = server_args.model_path
         self.xy_tokenizer_path = server_args.xy_tokenizer_path
@@ -69,10 +65,14 @@ class MossTTSDMultimodalProcessor(BaseMultimodalProcessor):
             self.model_path, audio_tokenizer_path=self.xy_tokenizer_path
         )
 
+        super().__init__(
+            hf_config, server_args, self.moss_processor, transport_mode, *args, **kwargs
+        )
+
         # Setup multimodal tokens (MOSS-TTSD uses audio tokens)
         # MOSS-TTSD doesn't have special tokens like image/video models
         # It directly processes text and audio together
-        self.mm_tokens = MultimodalSpecialTokens().build(_processor)
+        self.mm_tokens = MultimodalSpecialTokens().build(self.moss_processor)
 
     def _read_sample_rate(self) -> int:
         """Read output sample rate from XY tokenizer config."""
@@ -231,77 +231,46 @@ class MossTTSDMultimodalProcessor(BaseMultimodalProcessor):
 
         # Decode tokens to text and audio
         try:
-            text_list, audio_list = self.moss_processor.batch_decode(token_tensor)
-        except Exception as e:
-            # NOTE(gy): sanitize channel-0 indices and decode manually to avoid out-of-range errors
-            logger.warning(
-                f"batch_decode failed ({e}); falling back to safe decode path."
+            # Shift back to per-timestep layout and un-offset channel-0
+            normal = self.moss_processor.shifting_outputs(
+                token_tensor,
+                self.moss_processor.speech_token_range,
+                self.max_channels,
             )
-            try:
-                # Shift back to per-timestep layout and un-offset channel-0
-                normal = self.moss_processor.shifting_outputs(
-                    token_tensor,
-                    self.moss_processor.speech_token_range,
-                    self.max_channels,
-                )
-                # Clamp channel-0 codes into valid range [0, 1023]
-                normal[..., 0] = torch.clamp(normal[..., 0], min=0, max=1023)
 
-                # Find valid audio spans where all non-text channels are present
-                spans = self.moss_processor._find_max_valid_positions(
-                    normal, self.moss_processor.audio_pad_token_id
-                )
+            # Find valid audio spans where all non-text channels are present
+            spans = self.moss_processor._find_max_valid_positions(
+                normal, self.moss_processor.audio_pad_token_id
+            )
 
-                # Decode each fragment independently using exact code lengths to avoid tail noise
-                decode_audio = []
-                for seq_frags in spans:
-                    if len(seq_frags):
-                        seq_audio = []
-                        for f in seq_frags:
-                            # f: [time, channels] -> [channels, batch=1, time]
-                            codes = f.permute(1, 0).unsqueeze(1).contiguous()
-                            code_len = torch.tensor(
-                                [f.shape[0]], dtype=torch.long, device=f.device
-                            )
-                            out = self.moss_processor.audio_tokenizer._decode(
-                                codes, codes_lengths=code_len
-                            )
-                            seq_audio.append(out["audio_values"][0])  # (1, T)
-                        decode_audio.append(seq_audio)
-                    else:
-                        decode_audio.append([])
+            # Decode audio
+            audio_codes = spans[0][0].unsqueeze(0).permute(2, 0, 1)
+            decode_audio = (
+                self.moss_processor.audio_tokenizer.decode(audio_codes)["audio_values"][
+                    0
+                ]
+                .detach()
+                .cpu()
+            )
 
-                # Decode text from channel-0 directly (keep original behavior)
-                text_list = self.moss_processor.tokenizer.batch_decode(
-                    token_tensor[:, :, 0]
-                )
-                audio_list = decode_audio
-            except Exception as ee:
-                logger.error(f"Safe decode path also failed: {ee}")
-                raise
+            # Decode text from channel-0 directly (keep original behavior)
+            decode_text = self.moss_processor.tokenizer.decode(token_tensor[0, :, 0])
+        except Exception as ee:
+            import traceback
 
-        # Get first result
-        decoded_text = text_list[0] if text_list else ""
+            traceback.print_exc()
+            logger.error(f"Safe decode path also failed: {ee}")
+            raise
 
         # Convert audio to byte stream
         audio_bytes = b""
-        if audio_list and audio_list[0]:
-            # Concatenate all audio fragments
-            audio_fragments = audio_list[0]
-            if audio_fragments:
-                # Combine all fragments
-                combined_audio = torch.cat(
-                    [frag.detach().cpu() for frag in audio_fragments], dim=-1
-                )
 
-                # Convert to bytes (WAV format)
-                buffer = io.BytesIO()
-                torchaudio.save(
-                    buffer, combined_audio, self.output_sample_rate, format="wav"
-                )
-                audio_bytes = buffer.getvalue()
+        # Convert to bytes (WAV format)
+        buffer = io.BytesIO()
+        torchaudio.save(buffer, decode_audio, self.output_sample_rate, format="wav")
+        audio_bytes = buffer.getvalue()
 
-        return decoded_text, audio_bytes
+        return decode_text, audio_bytes
 
     async def process_mm_data_async(
         self,

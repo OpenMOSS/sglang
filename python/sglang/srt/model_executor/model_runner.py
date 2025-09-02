@@ -1821,12 +1821,11 @@ class ModelRunner:
         self,
         logits_output: Union[LogitsProcessorOutput, List[LogitsProcessorOutput]],
         sampling_info: SamplingBatchInfo,
-        batch: "ModelWorkerBatch",
+        current_generation_step: Optional[int] = None,
     ):
         # Multi-channel models are not compatible with the current logit bias.
         if self.server_args.multi_channel:
             if self.server_args.delay_pattern:
-                current_generation_step = batch.current_generation_step
                 for i, logits in enumerate(logits_output):
                     if i != 0 and current_generation_step + 1 > i:
                         logits.next_token_logits[:, self.model_config.pad_token[i]] = (
@@ -1838,19 +1837,6 @@ class ModelRunner:
                         logits.next_token_logits[:, self.model_config.pad_token[i]] = (
                             -torch.inf
                         )
-
-                if (
-                    hasattr(batch, "needs_additional_steps")
-                    and batch.needs_additional_steps is not None
-                ):
-                    nas = batch.needs_additional_steps
-                    if torch.is_tensor(nas):
-                        mask = (nas > 0) & (nas < self.model_config.channels - 1)
-                        if torch.any(mask):
-                            eos_id = next(iter(self.model_config.hf_eos_token_id))
-                            l = logits_output[0].next_token_logits
-                            l[mask, :] = -torch.inf
-                            l[mask, eos_id] = 0.0
             return
         # Apply logit bias
         if sampling_info.sampling_info_done:
@@ -1959,7 +1945,9 @@ class ModelRunner:
                 axis=-1,
             )
 
-        self._preprocess_logits(logits_output, batch.sampling_info, batch)
+        self._preprocess_logits(
+            logits_output, batch.sampling_info, batch.current_generation_step
+        )
 
         # Sample the next tokens
         next_token_ids = self.sampler(

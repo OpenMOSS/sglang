@@ -442,6 +442,9 @@ class ServerArgs:
     # For delay-pattern model support
     delay_pattern: Optional[bool] = None
 
+    # For MOSS-TTSD XY tokenizer path
+    xy_tokenizer_path: Optional[str] = None
+    
     def __post_init__(self):
         """
         Orchestrates the handling of various server arguments, ensuring proper configuration and validation.
@@ -2665,6 +2668,14 @@ class ServerArgs:
             "--delay-pattern",
             action="store_true",
             help="Enable delay-pattern model support.",
+        )
+
+        # For MOSS-TTSD XY tokenizer path
+        parser.add_argument(
+            "--xy-tokenizer-path",
+            type=str,
+            default=ServerArgs.xy_tokenizer_path,
+            help="Path to XY tokenizer for MOSS-TTSD audio encoding/decoding.",
         )
 
         # Deprecated arguments

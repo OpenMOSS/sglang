@@ -86,6 +86,8 @@ from sglang.srt.managers.io_struct import (
     SeparateReasoningReqInput,
     SetInternalStateReq,
     SlowDownReqInput,
+    TTSSynthesizeReqInput,
+    TTSSynthesizeReqOutput,
     UnloadLoRAAdapterReqInput,
     UpdateWeightFromDiskReqInput,
     UpdateWeightsFromDistributedReqInput,
@@ -104,6 +106,7 @@ from sglang.srt.managers.multi_tokenizer_mixin import (
 from sglang.srt.managers.template_manager import TemplateManager
 from sglang.srt.managers.tokenizer_manager import ServerStatus, TokenizerManager
 from sglang.srt.metrics.func_timer import enable_func_timer
+from sglang.srt.multimodal.processors.moss_ttsd import MossTTSDMultimodalProcessor
 from sglang.srt.parser.reasoning_parser import ReasoningParser
 from sglang.srt.server_args import PortArgs, ServerArgs
 from sglang.srt.utils import (
@@ -557,6 +560,130 @@ async def classify_request(obj: EmbeddingReqInput, request: Request):
         ).__anext__()
         return ret
     except ValueError as e:
+        return _create_error_response(e)
+
+
+@app.api_route("/generate_audio", methods=["POST"])
+async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
+    """Handle audio generation request with end-to-end processing for TTS."""
+    import base64
+
+    try:
+        # Check if this is a MOSS-TTSD model
+        if not hasattr(_global_state, "moss_ttsd_processor"):
+            # Initialize the processor if not already done
+            if (
+                _global_state.tokenizer_manager.server_args.multi_channel
+                and _global_state.tokenizer_manager.server_args.delay_pattern
+            ):
+                if not _global_state.tokenizer_manager.server_args.xy_tokenizer_path:
+                    return _create_error_response(
+                        ValueError(
+                            "MOSS-TTSD synthesis requires XY tokenizer path. "
+                            "Please provide --xy-tokenizer-path when starting the server."
+                        )
+                    )
+                # Initialize MOSS-TTSD processor
+                _global_state.moss_ttsd_processor = MossTTSDMultimodalProcessor(
+                    hf_config=_global_state.tokenizer_manager.model_config.hf_config,
+                    server_args=_global_state.tokenizer_manager.server_args,
+                )
+            else:
+                return _create_error_response(
+                    ValueError(
+                        "TTS synthesis requires MOSS-TTSD model with --multi-channel and --delay-pattern flags"
+                    )
+                )
+
+        # Step 1: Preprocess text and audio to tokens
+        input_ids = _global_state.moss_ttsd_processor.preprocess(
+            text=obj.text,
+            system_prompt=obj.system_prompt,
+            prompt_text=obj.prompt_text,
+            prompt_audio=obj.prompt_audio,
+            prompt_audio_speaker1=obj.prompt_audio_speaker1,
+            prompt_text_speaker1=obj.prompt_text_speaker1,
+            prompt_audio_speaker2=obj.prompt_audio_speaker2,
+            prompt_text_speaker2=obj.prompt_text_speaker2,
+        )
+
+        # Step 2: Generate using the model
+        generate_req = GenerateReqInput(
+            input_ids=input_ids,
+            multi_channel=True,
+            sampling_params={
+                "temperature": obj.temperature,
+                "top_p": obj.top_p,
+                "max_new_tokens": 2048,
+            },
+        )
+
+        # Call generation
+        result = await _global_state.tokenizer_manager.generate_request(
+            generate_req, request
+        ).__anext__()
+
+        # Step 3: Postprocess tokens to audio
+        # MOSS-TTSD needs the FULL sequence (prompt + generated) for proper decoding
+        generated_tokens = result.get("output_ids", [])
+
+        decoded_text, audio_bytes = _global_state.moss_ttsd_processor.postprocess(
+            generated_tokens
+        )
+
+        # Prepare response
+        if obj.output_format == "base64":
+            audio_output = base64.b64encode(audio_bytes).decode("utf-8")
+        else:
+            audio_output = audio_bytes
+
+        response = TTSSynthesizeReqOutput(
+            text=decoded_text,
+            audio=audio_output,
+            meta_info={
+                "prompt_tokens": result.get("meta_info", {}).get("prompt_tokens", 0),
+                "completion_tokens": result.get("meta_info", {}).get(
+                    "completion_tokens", 0
+                ),
+                "e2e_latency": result.get("meta_info", {}).get("e2e_latency", 0),
+            },
+        )
+
+        # Return appropriate response based on format
+        if obj.output_format == "wav":
+            # Return raw WAV bytes
+            # Note: HTTP headers must be ASCII, so we base64 encode the decoded text if it contains non-ASCII characters
+            import urllib.parse
+
+            encoded_text = urllib.parse.quote(decoded_text, safe="")
+
+            return Response(
+                content=audio_bytes,
+                media_type="audio/wav",
+                headers={
+                    "X-Decoded-Text": encoded_text,
+                    "X-Sample-Rate": str(
+                        _global_state.moss_ttsd_processor.output_sample_rate
+                    ),
+                    "X-Prompt-Tokens": str(response.meta_info.get("prompt_tokens", 0)),
+                    "X-Completion-Tokens": str(
+                        response.meta_info.get("completion_tokens", 0)
+                    ),
+                },
+            )
+        else:
+            # Return JSON with base64 audio
+            return ORJSONResponse(
+                {
+                    "text": response.text,
+                    "audio": response.audio,
+                    "sample_rate": _global_state.moss_ttsd_processor.output_sample_rate,
+                    "meta_info": response.meta_info,
+                }
+            )
+
+    except Exception as e:
+        logger.error(f"[generate_audio] Error: {e}")
         return _create_error_response(e)
 
 

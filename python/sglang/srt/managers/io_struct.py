@@ -1380,6 +1380,44 @@ class BlockReqType(Enum):
 
 
 @dataclass
+class TTSSynthesizeReqInput:
+    """Request input for TTS synthesis endpoint."""
+
+    # The text to synthesize
+    text: str
+    # System prompt for the model
+    system_prompt: str = (
+        "You are a speech synthesizer that generates natural, realistic, and human-like conversational audio from dialogue text."
+    )
+    # Optional text for voice cloning
+    prompt_text: Optional[str] = None
+    # Optional audio for voice cloning (base64 encoded)
+    prompt_audio: Optional[str] = None
+    # Optional multi-speaker data
+    prompt_audio_speaker1: Optional[str] = None
+    prompt_text_speaker1: Optional[str] = None
+    prompt_audio_speaker2: Optional[str] = None
+    prompt_text_speaker2: Optional[str] = None
+    # Sampling parameters
+    temperature: float = 0.7
+    top_p: float = 0.8
+    # Output format: "wav" or "base64"
+    output_format: str = "wav"
+
+
+@dataclass
+class TTSSynthesizeReqOutput:
+    """Response output for TTS synthesis endpoint."""
+
+    # Decoded text
+    text: str
+    # Audio data (base64 encoded if output_format is "base64")
+    audio: Union[str, bytes]
+    # Metadata
+    meta_info: Optional[Dict[str, Any]] = None
+
+
+@dataclass
 class BlockReqInput:
     type: BlockReqType
 

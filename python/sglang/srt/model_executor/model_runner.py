@@ -2129,7 +2129,9 @@ class ModelRunner:
                         logits.next_token_logits[:, self.model_config.pad_token[i]] = (
                             -torch.inf
                         )
-                    if i == 0 and current_generation_step <= 7:
+                    if i == 0 and current_generation_step <= (
+                        self.model_config.channels - 1
+                    ):
                         logits.next_token_logits[:, self.model_config.pad_token[i]] = (
                             -torch.inf
                         )

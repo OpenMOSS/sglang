@@ -48,6 +48,7 @@ class MossTTSDMultimodalProcessor(BaseMultimodalProcessor):
         self.model_path = server_args.model_path
         self.xy_tokenizer_path = server_args.xy_tokenizer_path
         self.max_channels = getattr(hf_config, "channels", 8)
+        self.device = server_args.device
 
         if not self.xy_tokenizer_path:
             raise ValueError("xy_tokenizer_path is required for MOSS-TTSD processor")
@@ -62,9 +63,10 @@ class MossTTSDMultimodalProcessor(BaseMultimodalProcessor):
 
         # Initialize the underlying MOSS-TTSD processor
         self.moss_processor = MossTTSDProcessor.from_pretrained(
-            self.model_path, audio_tokenizer_path=self.xy_tokenizer_path
+            self.model_path,
+            audio_tokenizer_path=self.xy_tokenizer_path,
         )
-
+        self.moss_processor.audio_tokenizer.to(self.device)
         super().__init__(
             hf_config, server_args, self.moss_processor, transport_mode, *args, **kwargs
         )

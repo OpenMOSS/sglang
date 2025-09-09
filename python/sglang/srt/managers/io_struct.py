@@ -1232,6 +1232,8 @@ class TTSSynthesizeReqInput:
     # Sampling parameters
     temperature: float = 0.7
     top_p: float = 0.8
+    # Maximum tokens to generate
+    max_new_tokens: int = 2048
     # Output format: "wav" or "base64"
     output_format: str = "wav"
 
@@ -1244,8 +1246,6 @@ class TTSSynthesizeReqOutput:
     text: str
     # Audio data (base64 encoded if output_format is "base64")
     audio: Union[str, bytes]
-    # Metadata
-    meta_info: Optional[Dict[str, Any]] = None
 
 
 @dataclass

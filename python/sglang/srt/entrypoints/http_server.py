@@ -610,7 +610,7 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
             sampling_params={
                 "temperature": obj.temperature,
                 "top_p": obj.top_p,
-                "max_new_tokens": 2048,
+                "max_new_tokens": obj.max_new_tokens,
             },
         )
 
@@ -636,36 +636,15 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
         response = TTSSynthesizeReqOutput(
             text=decoded_text,
             audio=audio_output,
-            meta_info={
-                "prompt_tokens": result.get("meta_info", {}).get("prompt_tokens", 0),
-                "completion_tokens": result.get("meta_info", {}).get(
-                    "completion_tokens", 0
-                ),
-                "e2e_latency": result.get("meta_info", {}).get("e2e_latency", 0),
-            },
         )
 
         # Return appropriate response based on format
         if obj.output_format == "wav":
             # Return raw WAV bytes
-            # Note: HTTP headers must be ASCII, so we base64 encode the decoded text if it contains non-ASCII characters
-            import urllib.parse
-
-            encoded_text = urllib.parse.quote(decoded_text, safe="")
-
             return Response(
                 content=audio_bytes,
                 media_type="audio/wav",
-                headers={
-                    "X-Decoded-Text": encoded_text,
-                    "X-Sample-Rate": str(
-                        _global_state.moss_ttsd_processor.output_sample_rate
-                    ),
-                    "X-Prompt-Tokens": str(response.meta_info.get("prompt_tokens", 0)),
-                    "X-Completion-Tokens": str(
-                        response.meta_info.get("completion_tokens", 0)
-                    ),
-                },
+                status_code=HTTPStatus.OK,
             )
         else:
             # Return JSON with base64 audio
@@ -674,8 +653,8 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
                     "text": response.text,
                     "audio": response.audio,
                     "sample_rate": _global_state.moss_ttsd_processor.output_sample_rate,
-                    "meta_info": response.meta_info,
-                }
+                },
+                status_code=HTTPStatus.OK,
             )
 
     except Exception as e:

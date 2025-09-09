@@ -1422,6 +1422,13 @@ class TTSSynthesizeReqInput:
     # Sampling parameters
     temperature: float = 0.7
     top_p: float = 0.8
+    # Maximum tokens to generate
+    max_new_tokens: int = 2048
+    # Text/audio processing options for MOSS-TTSD processor
+    # Whether to normalize input text (e.g., punctuation/speaker tags)
+    use_normalize: Optional[bool] = None
+    # Seconds of silence appended to prompt audio for encoder segmentation
+    silence_duration: Optional[float] = None
     # Output format: "wav" or "base64"
     output_format: str = "wav"
 

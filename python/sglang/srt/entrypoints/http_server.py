@@ -601,6 +601,8 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
             prompt_text_speaker1=obj.prompt_text_speaker1,
             prompt_audio_speaker2=obj.prompt_audio_speaker2,
             prompt_text_speaker2=obj.prompt_text_speaker2,
+            use_normalize=obj.use_normalize,
+            silence_duration=obj.silence_duration,
         )
 
         # Step 2: Generate using the model
@@ -641,18 +643,26 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
         # Return appropriate response based on format
         if obj.output_format == "wav":
             # Return raw WAV bytes
+            meta = response.meta_info or {}
             return Response(
                 content=audio_bytes,
                 media_type="audio/wav",
+                headers={
+                    "sample_rate": str(
+                        _global_state.moss_ttsd_processor.output_sample_rate
+                    ),
+                    "prompt_tokens": str(meta.get("prompt_tokens", 0)),
+                    "completion_tokens": str(meta.get("completion_tokens", 0)),
+                },
                 status_code=HTTPStatus.OK,
             )
         else:
-            # Return JSON with base64 audio
+            # Return JSON with base64 audio (exclude text to avoid OOM), keep meta_info
             return ORJSONResponse(
                 {
-                    "text": response.text,
                     "audio": response.audio,
                     "sample_rate": _global_state.moss_ttsd_processor.output_sample_rate,
+                    "meta_info": response.meta_info,
                 },
                 status_code=HTTPStatus.OK,
             )

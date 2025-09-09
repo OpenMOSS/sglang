@@ -96,6 +96,14 @@ class MossTTSDMultimodalProcessor(BaseMultimodalProcessor):
         prompt_text_speaker1: Optional[str] = None,
         prompt_audio_speaker2: Optional[Union[str, bytes, np.ndarray]] = None,
         prompt_text_speaker2: Optional[str] = None,
+        *,
+        # Options forwarded to MossTTSDProcessor.__call__ via kwargs groups
+        use_normalize: Optional[bool] = None,
+        silence_duration: Optional[float] = None,
+        pad_token_id: Optional[int] = None,
+        audio_pad_token_id: Optional[int] = None,
+        max_channels: Optional[int] = None,
+        padding: Optional[bool] = None,
     ) -> List[List[int]]:
         """Preprocess text and audio inputs to token IDs.
 
@@ -138,8 +146,31 @@ class MossTTSDMultimodalProcessor(BaseMultimodalProcessor):
         if prompt_text_speaker2:
             data["prompt_text_speaker2"] = prompt_text_speaker2
 
-        # Process through MOSS-TTSD processor
-        inputs = self.moss_processor([data])
+        # Build processor kwargs groups following MossTTSDProcessor.__call__ signature
+        text_kwargs: Dict[str, Any] = {}
+        audio_kwargs: Dict[str, Any] = {}
+        common_kwargs: Dict[str, Any] = {}
+
+        if pad_token_id is not None:
+            text_kwargs["pad_token_id"] = int(pad_token_id)
+        if audio_pad_token_id is not None:
+            audio_kwargs["audio_pad_token_id"] = int(audio_pad_token_id)
+        if max_channels is not None:
+            audio_kwargs["max_channels"] = int(max_channels)
+        if silence_duration is not None:
+            audio_kwargs["silence_duration"] = float(silence_duration)
+        if use_normalize is not None:
+            common_kwargs["use_normalize"] = bool(use_normalize)
+        if padding is not None:
+            common_kwargs["padding"] = bool(padding)
+
+        # Process through MOSS-TTSD processor with forwarded options
+        inputs = self.moss_processor(
+            [data],
+            text_kwargs=text_kwargs,
+            audio_kwargs=audio_kwargs,
+            common_kwargs=common_kwargs,
+        )
 
         # Convert to list format for JSON serialization
         # Shape is [batch, time, channels], we take first batch

@@ -1234,6 +1234,11 @@ class TTSSynthesizeReqInput:
     top_p: float = 0.8
     # Maximum tokens to generate
     max_new_tokens: int = 2048
+    # Text/audio processing options for MOSS-TTSD processor
+    # Whether to normalize input text (e.g., punctuation/speaker tags)
+    use_normalize: Optional[bool] = None
+    # Seconds of silence appended to prompt audio for encoder segmentation
+    silence_duration: Optional[float] = None
     # Output format: "wav" or "base64"
     output_format: str = "wav"
 
@@ -1246,6 +1251,8 @@ class TTSSynthesizeReqOutput:
     text: str
     # Audio data (base64 encoded if output_format is "base64")
     audio: Union[str, bytes]
+    # Metadata
+    meta_info: Optional[Dict[str, Any]] = None
 
 
 @dataclass

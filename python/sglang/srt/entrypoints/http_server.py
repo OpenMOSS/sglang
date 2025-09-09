@@ -638,12 +638,18 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
         response = TTSSynthesizeReqOutput(
             text=decoded_text,
             audio=audio_output,
+            meta_info={
+                "prompt_tokens": result.get("meta_info", {}).get("prompt_tokens", 0),
+                "completion_tokens": result.get("meta_info", {}).get(
+                    "completion_tokens", 0
+                ),
+                "e2e_latency": result.get("meta_info", {}).get("e2e_latency", 0),
+            },
         )
 
         # Return appropriate response based on format
         if obj.output_format == "wav":
             # Return raw WAV bytes
-            meta = response.meta_info or {}
             return Response(
                 content=audio_bytes,
                 media_type="audio/wav",
@@ -651,8 +657,10 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
                     "sample_rate": str(
                         _global_state.moss_ttsd_processor.output_sample_rate
                     ),
-                    "prompt_tokens": str(meta.get("prompt_tokens", 0)),
-                    "completion_tokens": str(meta.get("completion_tokens", 0)),
+                    "prompt_tokens": str(response.meta_info.get("prompt_tokens", 0)),
+                    "completion_tokens": str(
+                        response.meta_info.get("completion_tokens", 0)
+                    ),
                 },
                 status_code=HTTPStatus.OK,
             )

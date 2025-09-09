@@ -606,6 +606,8 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
             prompt_text_speaker1=obj.prompt_text_speaker1,
             prompt_audio_speaker2=obj.prompt_audio_speaker2,
             prompt_text_speaker2=obj.prompt_text_speaker2,
+            use_normalize=obj.use_normalize,
+            silence_duration=obj.silence_duration,
         )
 
         # Step 2: Generate using the model
@@ -615,7 +617,7 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
             sampling_params={
                 "temperature": obj.temperature,
                 "top_p": obj.top_p,
-                "max_new_tokens": 2048,
+                "max_new_tokens": obj.max_new_tokens,
             },
         )
 
@@ -653,34 +655,29 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
         # Return appropriate response based on format
         if obj.output_format == "wav":
             # Return raw WAV bytes
-            # Note: HTTP headers must be ASCII, so we base64 encode the decoded text if it contains non-ASCII characters
-            import urllib.parse
-
-            encoded_text = urllib.parse.quote(decoded_text, safe="")
-
             return Response(
                 content=audio_bytes,
                 media_type="audio/wav",
                 headers={
-                    "X-Decoded-Text": encoded_text,
-                    "X-Sample-Rate": str(
+                    "sample_rate": str(
                         _global_state.moss_ttsd_processor.output_sample_rate
                     ),
-                    "X-Prompt-Tokens": str(response.meta_info.get("prompt_tokens", 0)),
-                    "X-Completion-Tokens": str(
+                    "prompt_tokens": str(response.meta_info.get("prompt_tokens", 0)),
+                    "completion_tokens": str(
                         response.meta_info.get("completion_tokens", 0)
                     ),
                 },
+                status_code=HTTPStatus.OK,
             )
         else:
-            # Return JSON with base64 audio
+            # Return JSON with base64 audio (exclude text to avoid OOM), keep meta_info
             return ORJSONResponse(
                 {
-                    "text": response.text,
                     "audio": response.audio,
                     "sample_rate": _global_state.moss_ttsd_processor.output_sample_rate,
                     "meta_info": response.meta_info,
-                }
+                },
+                status_code=HTTPStatus.OK,
             )
 
     except Exception as e:

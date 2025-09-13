@@ -1231,6 +1231,8 @@ class TTSSynthesizeReqInput:
     prompt_text_speaker2: Optional[str] = None
     # Sampling parameters
     temperature: float = 0.7
+    repetition_penalty: float = 1.0
+    top_k: int = 50
     top_p: float = 0.8
     # Maximum tokens to generate
     max_new_tokens: int = 2048

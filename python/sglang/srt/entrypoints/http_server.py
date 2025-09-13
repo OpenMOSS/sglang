@@ -609,13 +609,7 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
         generate_req = GenerateReqInput(
             input_ids=input_ids,
             multi_channel=True,
-            sampling_params={
-                "temperature": obj.temperature,
-                "repetition_penalty": obj.repetition_penalty,
-                "top_k": obj.top_k,
-                "top_p": obj.top_p,
-                "max_new_tokens": obj.max_new_tokens,
-            },
+            sampling_params=obj.sampling_params,
         )
 
         # Call generation

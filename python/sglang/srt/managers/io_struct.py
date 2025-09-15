@@ -1420,10 +1420,7 @@ class TTSSynthesizeReqInput:
     prompt_audio_speaker2: Optional[str] = None
     prompt_text_speaker2: Optional[str] = None
     # Sampling parameters
-    temperature: float = 0.7
-    top_p: float = 0.8
-    # Maximum tokens to generate
-    max_new_tokens: int = 2048
+    sampling_params: Optional[Dict[str, Any]] = None
     # Text/audio processing options for MOSS-TTSD processor
     # Whether to normalize input text (e.g., punctuation/speaker tags)
     use_normalize: Optional[bool] = None

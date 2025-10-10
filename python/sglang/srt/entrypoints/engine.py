@@ -211,6 +211,7 @@ class Engine(EngineBase):
             bootstrap_port=bootstrap_port,
             bootstrap_room=bootstrap_room,
             data_parallel_rank=data_parallel_rank,
+            multi_channel=self.server_args.multi_channel,
         )
         loop = asyncio.get_event_loop()
         generator = self.tokenizer_manager.generate_request(obj, None)

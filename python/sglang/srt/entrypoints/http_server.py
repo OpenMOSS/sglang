@@ -567,7 +567,7 @@ async def classify_request(obj: EmbeddingReqInput, request: Request):
 @app.api_route("/generate_audio", methods=["POST"])
 async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
     """Handle audio generation request with end-to-end processing for TTS."""
-    import base64
+    import pybase64
 
     try:
         # Check if this is a MOSS-TTSD model
@@ -596,6 +596,7 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
                     )
                 )
 
+        start_time = time.perf_counter()
         # Step 1: Preprocess text and audio to tokens
         input_ids = _global_state.moss_ttsd_processor.preprocess(
             text=obj.text,
@@ -632,10 +633,11 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
 
         # Prepare response
         if obj.output_format == "base64":
-            audio_output = base64.b64encode(audio_bytes).decode("utf-8")
+            audio_output = pybase64.b64encode(audio_bytes).decode("utf-8")
         else:
             audio_output = audio_bytes
 
+        end_time = time.perf_counter()
         response = TTSSynthesizeReqOutput(
             text=decoded_text,
             audio=audio_output,
@@ -644,7 +646,7 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
                 "completion_tokens": result.get("meta_info", {}).get(
                     "completion_tokens", 0
                 ),
-                "e2e_latency": result.get("meta_info", {}).get("e2e_latency", 0),
+                "e2e_latency": end_time - start_time,
             },
         )
 
@@ -662,6 +664,7 @@ async def generate_audio_request(obj: TTSSynthesizeReqInput, request: Request):
                     "completion_tokens": str(
                         response.meta_info.get("completion_tokens", 0)
                     ),
+                    "e2e_latency": str(response.meta_info.get("e2e_latency", None)),
                 },
                 status_code=HTTPStatus.OK,
             )
@@ -1481,6 +1484,28 @@ def _execute_server_warmup(
 
     try:
         if server_args.disaggregation_mode == "null":
+            # Check if this is a MOSS-TTSD model
+            if (
+                _global_state.tokenizer_manager.server_args.delay_pattern
+                and _global_state.tokenizer_manager.model_config.hf_config.model_type
+                == "moss_ttsd"
+            ):
+                logger.info(f"MOSS-TTSD model detected. Initializing processor...")
+                if not hasattr(_global_state, "moss_ttsd_processor"):
+                    # Initialize the processor if not already done
+                    if (
+                        not _global_state.tokenizer_manager.server_args.xy_tokenizer_path
+                    ):
+                        raise ValueError(
+                            "MOSS-TTSD synthesis requires XY tokenizer path. "
+                            "Please provide --xy-tokenizer-path when starting the server."
+                        )
+
+                    # Initialize MOSS-TTSD processor
+                    _global_state.moss_ttsd_processor = MossTTSDMultimodalProcessor(
+                        hf_config=_global_state.tokenizer_manager.model_config.hf_config,
+                        server_args=_global_state.tokenizer_manager.server_args,
+                    )
             res = requests.post(
                 url + request_name,
                 json=json_data,

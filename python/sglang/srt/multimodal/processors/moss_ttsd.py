@@ -14,6 +14,7 @@ import numpy as np
 import torch
 import torchaudio
 from transformers.models.moss_ttsd.processing_moss_ttsd import MossTTSDProcessor
+from transformers.utils.hub import snapshot_download
 
 from sglang.srt.models.moss_ttsd import MossTTSDForCausalLM
 from sglang.srt.multimodal.processors.base_processor import (
@@ -53,10 +54,7 @@ class MossTTSDMultimodalProcessor(BaseMultimodalProcessor):
         if not self.xy_tokenizer_path:
             raise ValueError("xy_tokenizer_path is required for MOSS-TTSD processor")
 
-        if not os.path.exists(self.xy_tokenizer_path):
-            raise ValueError(
-                f"XY tokenizer path does not exist: {self.xy_tokenizer_path}"
-            )
+        self.xy_tokenizer_path = self._ensure_xy_tokenizer_path(self.xy_tokenizer_path)
 
         # Read sample rate from XY tokenizer config
         self.input_sample_rate, self.output_sample_rate = self._read_sample_rate()
@@ -75,6 +73,34 @@ class MossTTSDMultimodalProcessor(BaseMultimodalProcessor):
         # MOSS-TTSD doesn't have special tokens like image/video models
         # It directly processes text and audio together
         self.mm_tokens = MultimodalSpecialTokens().build(self.moss_processor)
+
+    def _ensure_xy_tokenizer_path(self, path_or_name: str) -> str:
+        """Ensure XY tokenizer path is available locally.
+
+        Args:
+            path_or_name: Local directory path or Hugging Face repo id.
+
+        Returns:
+            Local directory path to the XY tokenizer.
+        """
+        if os.path.exists(path_or_name):
+            return path_or_name
+
+        try:
+            resolved_path = snapshot_download(
+                repo_id=path_or_name, repo_type="model", local_files_only=True
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"Unable to resolve XY tokenizer repo locally: {path_or_name}"
+            ) from exc
+
+        if not os.path.exists(resolved_path):
+            raise ValueError(
+                f"XY tokenizer path does not exist locally: {resolved_path}"
+            )
+
+        return resolved_path
 
     def _read_sample_rate(self) -> int:
         """Read output sample rate from XY tokenizer config."""

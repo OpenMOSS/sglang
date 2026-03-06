@@ -241,13 +241,23 @@ class LogitsProcessor(nn.Module):
     def __init__(
         self,
         config,
+        vocab_size: Optional[Union[List[int], int]] = None,
         skip_all_gather: bool = False,
         logit_scale: Optional[float] = None,
         return_full_logits: bool = False,
+        channel: Optional[int] = None,
     ):
         super().__init__()
         self.config = config
-        self.vocab_size = config.vocab_size
+        self.channel = channel
+        if vocab_size is not None:
+            if isinstance(vocab_size, list) and channel is not None:
+                self.vocab_size = vocab_size[channel]
+                self.vocab_size_list = vocab_size
+            else:
+                self.vocab_size = vocab_size
+        else:
+            self.vocab_size = config.vocab_size
         self.logit_scale = logit_scale
         self.use_attn_tp_group = get_global_server_args().enable_dp_lm_head
         self.use_fp32_lm_head = get_global_server_args().enable_fp32_lm_head
@@ -954,10 +964,21 @@ class LogitsProcessor(nn.Module):
         self, logits: torch.Tensor, logits_metadata: LogitsMetadata
     ) -> torch.Tensor:
         if logits_metadata.next_token_logits_buffer is not None:
-            logits_buffer = logits_metadata.next_token_logits_buffer
-            assert logits_buffer.dtype == torch.float
-            logits_buffer.copy_(logits[:, : self.vocab_size])
-            logits = logits_buffer
+            if self.channel is not None:
+                logits_buffer = logits_metadata.next_token_logits_buffer[
+                    :,
+                    sum(self.vocab_size_list[: self.channel]) : sum(
+                        self.vocab_size_list[: self.channel + 1]
+                    ),
+                ]
+                assert logits_buffer.dtype == torch.float
+                logits_buffer.copy_(logits[:, : self.vocab_size])
+                logits = logits_buffer
+            else:
+                logits_buffer = logits_metadata.next_token_logits_buffer
+                assert logits_buffer.dtype == torch.float
+                logits_buffer.copy_(logits[:, : self.vocab_size])
+                logits = logits_buffer
         else:
             logits = logits[:, : self.vocab_size].float()
         return logits

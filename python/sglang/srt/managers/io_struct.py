@@ -124,7 +124,7 @@ class GenerateReqInput(BaseReq):
     # The input prompt. It can be a single prompt or a batch of prompts.
     text: Optional[Union[List[str], str]] = None
     # The token ids for text; one can specify either text or input_ids
-    input_ids: Optional[Union[List[List[int]], List[int]]] = None
+    input_ids: Optional[Union[List[List[List[int]]], List[List[int]], List[int]]] = None
     # The embeddings for input_ids; one can specify either text or input_ids or input_embeds.
     input_embeds: Optional[Union[List[List[List[float]]], List[List[float]]]] = None
     # The image input. It can be an image instance, file name, URL, or base64 encoded string.
@@ -235,6 +235,9 @@ class GenerateReqInput(BaseReq):
     image_max_dynamic_patch: Optional[int] = None
     video_max_dynamic_patch: Optional[int] = None
 
+    # Multi-channel input support (extensions)
+    multi_channel: Optional[bool] = None
+
     def contains_mm_input(self) -> bool:
         return (
             has_valid_data(self.image_data)
@@ -302,7 +305,9 @@ class GenerateReqInput(BaseReq):
         elif self.input_ids is not None:
             if len(self.input_ids) == 0:
                 raise ValueError("input_ids cannot be empty.")
-            if isinstance(self.input_ids[0], int):
+            if isinstance(self.input_ids[0], int) or (
+                self.multi_channel and isinstance(self.input_ids[0][0], int)
+            ):
                 self.is_single = True
                 self.batch_size = 1
             else:
@@ -950,7 +955,7 @@ class BatchTokenIDOutput(BaseBatchReq, SpeculativeDecodingMetricsMixin):
     decode_ids: List[int]
     read_offsets: List[int]
     # Only used when `--skip-tokenizer-init` is on
-    output_ids: Optional[List[int]]
+    output_ids: Optional[Union[List[int], List[List[int]]]]
     # Detokenization configs
     skip_special_tokens: List[bool]
     spaces_between_special_tokens: List[bool]
@@ -1038,6 +1043,73 @@ class BatchMultimodalDecodeReq(BaseBatchReq):
 
     # The trainer step id. Used to know which step's weights are used for sampling.
     token_steps: List[List[int]] = None
+
+
+@dataclass
+class BatchAudioOutput(BaseBatchReq, SpeculativeDecodingMetricsMixin):
+    # The finish reason
+    finished_reasons: List[BaseFinishReason]
+    # For incremental decoding
+    decoded_wavs: List[tuple[torch.Tensor, int]]
+    decode_ids: List[int]
+    read_offsets: List[int]
+    # Only used when `--skip-tokenizer-init` is on
+    output_ids: Optional[Union[List[int], List[List[int]]]]
+    # Detokenization configs
+    skip_special_tokens: List[bool]
+    spaces_between_special_tokens: List[bool]
+    no_stop_trim: List[bool]
+
+    # Token counts
+    prompt_tokens: List[int]
+    completion_tokens: List[int]
+    cached_tokens: List[int]
+
+    # Logprobs
+    input_token_logprobs_val: List[float]
+    input_token_logprobs_idx: List[int]
+    output_token_logprobs_val: List[float]
+    output_token_logprobs_idx: List[int]
+    input_top_logprobs_val: List[List]
+    input_top_logprobs_idx: List[List]
+    output_top_logprobs_val: List[List]
+    output_top_logprobs_idx: List[List]
+    input_token_ids_logprobs_val: List[List]
+    input_token_ids_logprobs_idx: List[List]
+    output_token_ids_logprobs_val: List[List]
+    output_token_ids_logprobs_idx: List[List]
+    output_token_entropy_val: List[float]
+
+    # Hidden states
+    output_hidden_states: List[List[float]]
+
+    # The routed experts for each token, including both input and output tokens
+    # routed_experts[i] is a tensor of shape (token, layer, top_k) for request i
+    routed_experts: List[Optional[torch.Tensor]]
+
+    # The information of placeholder tokens (e.g., image token)
+    # idx is the index of the token in the prompt after expansion.
+    # val is the length of padded tokens after expansion.
+    placeholder_tokens_idx: List[Optional[List[int]]]
+    placeholder_tokens_val: List[Optional[List[int]]]
+
+    # Number of times each request was retracted.
+    retraction_counts: List[int]
+
+    # The trainer step id. Used to know which step's weights are used for sampling.
+    token_steps: List[List[int]] = None
+
+    # Load for DP balance
+    load: GetLoadReqOutput = None
+    # Customized info
+    customized_info: Optional[Dict[str, List[Any]]] = None
+    # Detailed breakdown of cached tokens by source (device/host/storage)
+    cached_tokens_details: Optional[List[Optional[Dict[str, Any]]]] = None
+    # DP rank of the scheduler that processed each request
+    dp_ranks: Optional[List[int]] = None
+
+    # For observability
+    time_stats: Optional[List[SchedulerReqTimeStats]] = None
 
 
 @dataclass

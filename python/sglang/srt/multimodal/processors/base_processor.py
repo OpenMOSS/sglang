@@ -906,7 +906,11 @@ class BaseMultimodalProcessor(ABC):
             mm_token_id = 3
             return result = [(2,4),(6,7)]
         """
-        mask = input_ids == mm_token_id
+        if get_global_server_args().multi_channel:
+            # For multi-channel model, each mm token corresponds to one item
+            mask = input_ids[:, 0] == mm_token_id
+        else:
+            mask = input_ids == mm_token_id
         start_positions = (mask & ~torch.roll(mask, 1)).nonzero(as_tuple=True)[0]
         end_positions = (mask & ~torch.roll(mask, -1)).nonzero(as_tuple=True)[0]
         return list(zip(start_positions.tolist(), end_positions.tolist()))
@@ -973,7 +977,11 @@ class BaseMultimodalProcessor(ABC):
             input_text=input_text, images=images, audios=audios, videos=videos, **kwargs
         )
 
-        input_ids = ret["input_ids"].flatten()
+        if get_global_server_args().multi_channel:
+            # For multi-channel model, directly return input_ids from processor output
+            input_ids = ret["input_ids"]
+        else:
+            input_ids = ret["input_ids"].flatten()
         collected_items = self.collect_mm_items_from_processor_output(ret)
 
         return collected_items, input_ids, ret
@@ -993,8 +1001,9 @@ class BaseMultimodalProcessor(ABC):
         """
         # Collect all items and categorize them
         all_loaded_data = base_output.organize_results()
+        use_forced_processor = kwargs.get("use_forced_processor", False)
         # Handle text-only case
-        if not all_loaded_data:
+        if not (all_loaded_data or use_forced_processor):
             input_ids = self._tokenizer(
                 base_output.input_text,
                 return_tensors="pt",
@@ -1018,7 +1027,7 @@ class BaseMultimodalProcessor(ABC):
         all_collected_items: list[MultimodalDataItem] = []
         input_ids = None
         # Handle raw items (need processing)
-        if raw_images or raw_audios or raw_videos:
+        if raw_images or raw_audios or raw_videos or use_forced_processor:
             collected_items, input_ids, ret = self._process_and_collect_mm_items(
                 input_text=base_output.input_text,
                 images=raw_images,

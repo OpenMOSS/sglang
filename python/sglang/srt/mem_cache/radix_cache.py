@@ -662,6 +662,8 @@ class RadixCache(BasePrefixCache):
         access_time = time.monotonic()
         node.last_access_time = access_time
 
+        if isinstance(key.token_ids[0], list):
+            key.token_ids = [tuple(x) for x in key.token_ids]
         child_key = self.get_child_key_fn(key)
 
         value = []
@@ -715,6 +717,12 @@ class RadixCache(BasePrefixCache):
         node.priority = max(node.priority, priority)
         if len(key) == 0:
             return 0
+        elif isinstance(key.token_ids[0], list):
+            key.token_ids = [tuple(x) for x in key.token_ids]
+        elif isinstance(key.token_ids[0], int) and isinstance(key.token_ids[-1], list):
+            key.token_ids = [
+                tuple(x) if isinstance(x, list) else x for x in key.token_ids
+            ]
 
         child_key = self.get_child_key_fn(key)
 

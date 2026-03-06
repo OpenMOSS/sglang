@@ -464,6 +464,7 @@ class Scheduler(
     def init_tokenizer(self):
         server_args = self.server_args
         self.is_generation = self.model_config.is_generation
+        self.is_audio_gen = self.model_config.is_audio_gen
 
         if server_args.skip_tokenizer_init:
             self.tokenizer = self.processor = None
@@ -1538,6 +1539,22 @@ class Scheduler(
                 # Use default bootstrap port
                 recv_req.bootstrap_port = self.server_args.disaggregation_bootstrap_port
 
+            if self.server_args.delay_pattern:
+                if (
+                    len(recv_req.input_ids) >= self.model_config.channels
+                    and self.server_args.skip_tokenizer_init is True
+                ):
+                    truncated_input_ids = recv_req.input_ids[
+                        1 - self.model_config.channels :
+                    ]
+                    recv_req.input_ids = recv_req.input_ids[
+                        : 1 - self.model_config.channels
+                    ]
+                else:
+                    truncated_input_ids = []
+            else:
+                truncated_input_ids = None
+
             req = Req(
                 recv_req.rid,
                 recv_req.input_text,
@@ -1569,6 +1586,8 @@ class Scheduler(
                 http_worker_ipc=recv_req.http_worker_ipc,
                 dllm_config=self.dllm_config,
                 time_stats=recv_req.time_stats,
+                truncated_input_ids=truncated_input_ids,
+                is_audio_gen_model=self.model_config.is_audio_gen,
             )
             req.tokenizer = self.tokenizer
 
@@ -1975,6 +1994,10 @@ class Scheduler(
 
         if self.dllm_config is not None:
             new_batch = self.get_new_batch_dllm()
+        elif self.running_batch is not None and any(
+            req.is_audio_decoding() for req in self.running_batch.reqs
+        ):
+            new_batch = self.update_running_batch_audio_decode(self.running_batch)
         else:
             new_batch = self.get_new_batch_prefill()
 
@@ -1989,6 +2012,7 @@ class Scheduler(
 
         if new_batch is not None:
             # Run prefill first if possible
+            # or audio decode
             ret = new_batch
         else:
             # Run decode
@@ -2310,6 +2334,74 @@ class Scheduler(
         batch.prepare_for_decode()
         return batch
 
+    def update_running_batch_audio_decode(
+        self, batch: ScheduleBatch
+    ) -> Optional[ScheduleBatch]:
+        """Update the current running decoding batch."""
+        initial_bs = batch.batch_size()
+
+        batch.filter_batch(v1_spec_info_filtered=True)
+        if batch.is_empty():
+            batch.batch_is_full = False
+            return batch
+
+        # Check if decode out of memory
+        if (kv_full_retract_flag := not batch.check_decode_mem()) or (
+            TEST_RETRACT and self.forward_ct % TEST_RETRACT_INTERVAL == 0
+        ):
+            old_available_tokens = self.token_to_kv_pool_allocator.available_size()
+            old_ratio = self.new_token_ratio
+            retracted_reqs, new_token_ratio, reqs_to_abort = batch.retract_decode(
+                self.server_args
+            )
+            new_available_tokens = self.token_to_kv_pool_allocator.available_size()
+            new_token_gained = new_available_tokens - old_available_tokens
+
+            self.num_retracted_reqs = len(retracted_reqs)
+            if self.enable_metrics and len(retracted_reqs) > 0:
+                self.metrics_collector.increment_retracted_reqs(
+                    num_retracted_reqs=len(retracted_reqs),
+                    num_retracted_input_tokens=sum(
+                        len(r.origin_input_ids) for r in retracted_reqs
+                    ),
+                    num_retracted_output_tokens=sum(
+                        len(r.output_ids) for r in retracted_reqs
+                    ),
+                )
+            self.new_token_ratio = new_token_ratio
+            for req in reqs_to_abort:
+                abort_reason: FINISH_ABORT = req.to_finish
+                self.send_to_tokenizer.send_output(
+                    AbortReq(abort_message=abort_reason.message, rid=req.rid), req
+                )
+
+            msg_prefix = (
+                "KV cache pool is full. Retract requests. "
+                if kv_full_retract_flag
+                else "Testing retraction. "
+            )
+            msg_details = f"#retracted_reqs: {len(retracted_reqs)}, #new_tokens_gained: {new_token_gained}"
+            if kv_full_retract_flag:
+                msg_details += (
+                    f", #new_token_ratio: {old_ratio:.4f} -> {new_token_ratio:.4f}"
+                )
+            logger.warning(msg_prefix + msg_details)
+
+            for req in retracted_reqs:
+                self._add_request_to_queue(req, is_retracted=True)
+        else:
+            self.new_token_ratio = max(
+                self.new_token_ratio - self.new_token_ratio_decay,
+                self.min_new_token_ratio,
+            )
+
+        if batch.batch_size() < initial_bs:
+            batch.batch_is_full = False
+
+        # Update batch tensors
+        batch.prepare_for_audio_decode()
+        return batch
+
     def record_batch_in_overlap(self, model_worker_batch: ModelWorkerBatch):
         # FIXME(lsyin): hacky way to keep a reference to avoid GPU tensors being freed by torch GC
         # NOTE: More Reliable: record all tensors into the forward stream
@@ -2400,6 +2492,11 @@ class Scheduler(
             elif self.enable_pdmux and batch.forward_mode.is_split_prefill():
                 batch_result = self.tp_worker.forward_batch_split_prefill(batch)
                 future_indices_or_next_token_ids = batch_result.next_token_ids
+            elif batch.forward_mode.is_audio_decode():
+                batch_result = self.model_worker.forward_batch_audio_decode(
+                    worker_batch_or_batch
+                )
+                return batch_result
             else:
                 kwargs = (
                     {"pp_proxy_tensors": pp_proxy_tensors}
@@ -2418,6 +2515,20 @@ class Scheduler(
             #       we shall still keep the original outputs, e.g. next_token_ids
             #       in the GenerationBatchOutput for processing after copy_done.
             batch.output_ids = future_indices_or_next_token_ids
+            if self.server_args.delay_pattern:
+                (
+                    batch.current_generation_step,
+                    batch.truncated_input_ids,
+                    batch.ref_audio_codes,
+                    batch.needs_additional_steps,
+                    batch.unfinished_sequences,
+                ) = (
+                    worker_batch_or_batch.current_generation_step,
+                    worker_batch_or_batch.truncated_input_ids,
+                    worker_batch_or_batch.ref_audio_codes,
+                    worker_batch_or_batch.needs_additional_steps,
+                    worker_batch_or_batch.unfinished_sequences,
+                )
 
             # These 2 values are needed for processing the output, but the values can be
             # modified by overlap schedule. So we have to copy them here so that
@@ -2500,6 +2611,8 @@ class Scheduler(
                 self.process_batch_result_prefill(batch, result)
         elif batch.forward_mode.is_prebuilt():
             self.process_batch_result_prebuilt(batch)
+        elif batch.forward_mode.is_audio_decode():
+            self.process_batch_result_audio_decode(batch, result)
         elif batch.forward_mode.is_idle():
             self.process_batch_result_idle(batch, result)
 

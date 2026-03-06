@@ -133,9 +133,14 @@ class DecodeInputBuffers(ForwardInputBuffers):
         num_tokens_per_bs: int,
         cache_loc_dtype: torch.dtype,
         enable_mamba_track: bool,
+        channels: int,
+        vocab_size_list: list[int] = None,
     ) -> "DecodeInputBuffers":
         with torch.device(device):
-            input_ids = torch.zeros((max_num_token,), dtype=torch.int64)
+            if channels == 1:
+                input_ids = torch.zeros((max_num_token,), dtype=torch.int64)
+            else:
+                input_ids = torch.zeros((max_num_token, channels), dtype=torch.int64)
             input_embeds = torch.zeros((max_num_token, hidden_size), dtype=dtype)
             req_pool_indices = torch.zeros((max_bs,), dtype=torch.int32)
             seq_lens = torch.full((max_bs,), seq_len_fill_value, dtype=torch.int32)
@@ -147,10 +152,17 @@ class DecodeInputBuffers(ForwardInputBuffers):
                 (max_bs * seq_len_fill_value + max_num_token) * num_tokens_per_bs,
                 dtype=torch.bool,
             )
-            next_token_logits_buffer = torch.zeros(
-                (max_num_token, vocab_size),
-                dtype=torch.float,
-            )
+            if channels == 1:
+                next_token_logits_buffer = torch.zeros(
+                    (max_num_token, vocab_size),
+                    dtype=torch.float,
+                )
+            else:
+                assert vocab_size_list is not None
+                next_token_logits_buffer = torch.zeros(
+                    (max_num_token, sum(vocab_size_list)),
+                    dtype=torch.float,
+                )
             mamba_track_indices = (
                 torch.zeros((max_bs,), dtype=torch.int64)
                 if enable_mamba_track
@@ -549,6 +561,12 @@ class CudaGraphRunner:
             num_tokens_per_bs=self.num_tokens_per_bs,
             cache_loc_dtype=self._cache_loc_dtype(),
             enable_mamba_track=enable_mamba_track,
+            channels=self.model_runner.model_config.channels,
+            vocab_size_list=(
+                self.model_runner.model_config.hf_config.vocab_size_list
+                if self.model_runner.server_args.multi_channel
+                else None
+            ),
         )
         self.buffers.share_buffers()
 
@@ -1081,6 +1099,18 @@ class CudaGraphRunner:
                 ),
                 customized_info=output.customized_info,
             )
+        elif isinstance(output, list) and self.model_runner.server_args.multi_channel:
+            return [
+                LogitsProcessorOutput(
+                    next_token_logits=out.next_token_logits[: self.raw_num_token],
+                    hidden_states=(
+                        out.hidden_states[: self.raw_num_token]
+                        if out.hidden_states is not None
+                        else None
+                    ),
+                )
+                for out in output
+            ]
         else:
             assert isinstance(output, PPProxyTensors)
             return PPProxyTensors({k: v[: self.bs] for k, v in output.tensors.items()})

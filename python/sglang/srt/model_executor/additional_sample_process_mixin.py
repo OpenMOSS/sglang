@@ -10,12 +10,15 @@ from sglang.srt.server_args import get_global_server_args
 
 class AdditionalSampleProcessMixin:
     def __init__(self):
-        model_arches = ("MossTTSDWithCodec", "MossTTSDForCausalLM")
         self._postprocess_dispatcher = {
-            arch: self.moss_ttsd_postprocess_tokens for arch in model_arches
+            "MossTTSDWithCodec": self.moss_ttsd_postprocess_tokens,
+            "MossTTSDForCausalLM": self.moss_ttsd_postprocess_tokens,
+            "MossTTSDelayWithCodec": self.moss_tts_delay_postprocess_tokens,
         }
         self._preprocess_dispatcher = {
-            arch: self.moss_ttsd_preprocess_logits for arch in model_arches
+            "MossTTSDWithCodec": self.moss_ttsd_preprocess_logits,
+            "MossTTSDForCausalLM": self.moss_ttsd_preprocess_logits,
+            "MossTTSDelayWithCodec": self.moss_tts_delay_preprocess_logits,
         }
 
     def preprocess_logits(
@@ -23,6 +26,7 @@ class AdditionalSampleProcessMixin:
         logits_output: Union[LogitsProcessorOutput, List[LogitsProcessorOutput]],
         sampling_info: SamplingBatchInfo,
         current_generation_step: torch.Tensor,
+        is_audio_stage: torch.Tensor,
     ):
         if get_global_server_args().delay_pattern:
             model_arch = self.model_config.hf_config.architectures[0]
@@ -32,6 +36,7 @@ class AdditionalSampleProcessMixin:
                     logits_output,
                     sampling_info,
                     current_generation_step,
+                    is_audio_stage,
                 )
 
     def _postprocess_tokens(
@@ -47,12 +52,14 @@ class AdditionalSampleProcessMixin:
                     forward_batch.current_generation_step,
                     forward_batch.needs_additional_steps,
                     forward_batch.unfinished_sequences,
+                    forward_batch.is_audio_stage,
                 ) = postprocess_fn(
                     next_token_ids,
                     forward_batch.current_generation_step,
                     forward_batch.truncated_input_ids,
                     forward_batch.needs_additional_steps,
                     forward_batch.unfinished_sequences,
+                    forward_batch.is_audio_stage,
                 )
 
     def is_speech_token(self, token_id: torch.Tensor) -> torch.Tensor:
@@ -65,6 +72,7 @@ class AdditionalSampleProcessMixin:
         logits_output: Union[LogitsProcessorOutput, List[LogitsProcessorOutput]],
         sampling_info: SamplingBatchInfo,
         current_generation_step: torch.Tensor,
+        is_audio_stage: torch.Tensor,
     ):
         steps = current_generation_step
         if steps.device != logits_output[0].next_token_logits.device:
@@ -97,6 +105,7 @@ class AdditionalSampleProcessMixin:
         truncated_input_ids: torch.Tensor,
         needs_additional_steps: torch.Tensor,
         unfinished_sequences: torch.Tensor,
+        is_audio_stage: torch.Tensor,
     ):
         channels = self.model_config.channels
         indices = (~self.is_speech_token(next_token_ids[:, 0])) & (
@@ -197,4 +206,163 @@ class AdditionalSampleProcessMixin:
             current_generation_step,
             needs_additional_steps,
             unfinished_sequences,
+            is_audio_stage,
+        )
+
+    def moss_tts_delay_preprocess_logits(
+        self,
+        logits_output: Union[LogitsProcessorOutput, List[LogitsProcessorOutput]],
+        sampling_info: SamplingBatchInfo,
+        current_generation_step: torch.Tensor,
+        is_audio_stage: torch.Tensor,
+    ):
+        pre_exclude_mask0 = torch.tensor(
+            [
+                self.model_config.hf_config.text_pad_id,
+                self.model_config.hf_config.gen_token_id,
+                self.model_config.hf_config.gen_delay_token_id,
+                self.model_config.hf_config.audio_eos_token_id,
+            ],
+            device=logits_output[0].next_token_logits.device,
+        )
+        pre_exclude_mask1 = torch.ones(
+            self.model_config.vocab_size,
+            device=logits_output[0].next_token_logits.device,
+        ).bool()
+        pre_exclude_mask1[
+            [
+                self.model_config.hf_config.gen_token_id,
+                self.model_config.hf_config.gen_delay_token_id,
+            ]
+        ] = False
+        audio_stage_mask = is_audio_stage.bool()
+        if torch.any(~audio_stage_mask):
+            # Use proper broadcasting: row_indices [N, 1] x col_indices [1, M] -> [N, M]
+            row_indices = (~audio_stage_mask).nonzero(as_tuple=False).squeeze(-1)
+            logits_output[0].next_token_logits[
+                row_indices.unsqueeze(1), pre_exclude_mask0.unsqueeze(0)
+            ] = -torch.inf
+        if torch.any(audio_stage_mask):
+            # pre_exclude_mask1 is a boolean mask, get the column indices where it's True
+            row_indices = audio_stage_mask.nonzero(as_tuple=False).squeeze(-1)
+            col_indices = pre_exclude_mask1.nonzero(as_tuple=False).squeeze(-1)
+            logits_output[0].next_token_logits[
+                row_indices.unsqueeze(1), col_indices.unsqueeze(0)
+            ] = -torch.inf
+
+        steps = current_generation_step
+        if steps.device != logits_output[0].next_token_logits.device:
+            steps = steps.to(device=logits_output[0].next_token_logits.device)
+        if (
+            steps.dim() != 1
+            or steps.shape[0] != logits_output[0].next_token_logits.shape[0]
+        ):
+            raise ValueError(
+                "current_generation_step must be a 1D tensor of shape [batch]. "
+                f"Got {tuple(steps.shape)} with batch={logits_output[0].next_token_logits.shape[0]}"
+            )
+        indices = steps <= self.model_config.hf_config.n_vq
+        if torch.any(indices):
+            logits_output[0].next_token_logits[
+                indices, self.model_config.hf_config.eos_token_id
+            ] = -torch.inf
+        for logits in logits_output[1:]:
+            logits.next_token_logits[:, self.model_config.hf_config.audio_pad_id] = (
+                -torch.inf
+            )
+
+        return logits_output
+
+    def moss_tts_delay_postprocess_tokens(
+        self,
+        next_token_ids: torch.Tensor,
+        current_generation_step: torch.Tensor,
+        truncated_input_ids: torch.Tensor,
+        needs_additional_steps: torch.Tensor,
+        unfinished_sequences: torch.Tensor,
+        is_audio_stage: torch.Tensor,
+    ):
+        # Text channel tokens handling
+        audio_bos_token_id = self.model_config.hf_config.audio_bos_token_id
+        audio_eos_token_id = self.model_config.hf_config.audio_eos_token_id
+        audio_pad_id = self.model_config.hf_config.audio_pad_id
+        channels = self.model_config.hf_config.n_vq
+        gen_delay_token_id = self.model_config.hf_config.gen_delay_token_id
+        gen_token_id = self.model_config.hf_config.gen_token_id
+
+        # Vectorized update for column-0 tokens.
+        # - needs_additional_steps <  channels => force gen_delay
+        # - needs_additional_steps == channels => force audio_eos
+        # - needs_additional_steps >  channels => keep sampled token
+        col0 = next_token_ids[:, 0]
+        col0 = torch.where(
+            needs_additional_steps < channels,
+            col0.new_full((), gen_delay_token_id),
+            col0,
+        )
+        col0 = torch.where(
+            needs_additional_steps == channels,
+            col0.new_full((), audio_eos_token_id),
+            col0,
+        )
+        next_token_ids[:, 0] = col0
+
+        # Vectorized update for audio stage flags.
+        # - When needs_additional_steps == channels, audio stage ends.
+        # - When we emit audio_bos, audio stage begins.
+        is_audio_stage = torch.where(
+            needs_additional_steps == channels,
+            torch.zeros_like(is_audio_stage),
+            is_audio_stage,
+        )
+        is_audio_stage = torch.where(
+            next_token_ids[:, 0] == audio_bos_token_id,
+            torch.ones_like(is_audio_stage),
+            is_audio_stage,
+        )
+
+        # If EOS is generated, the sequence is finished.
+        eos_mask = next_token_ids[:, 0] == self.model_config.hf_config.eos_token_id
+        unfinished_sequences = torch.where(
+            eos_mask,
+            torch.zeros_like(unfinished_sequences),
+            unfinished_sequences,
+        )
+
+        # Audio channel tokens handling
+        pre_audio_mask = current_generation_step.unsqueeze(1) > torch.arange(
+            channels, dtype=int, device=next_token_ids.device
+        ).expand(current_generation_step.size(0), channels)
+        post_audio_mask = (
+            torch.arange(channels, dtype=int, device=next_token_ids.device).expand(
+                needs_additional_steps.size(0), channels
+            )
+            > needs_additional_steps.unsqueeze(1) - 1
+        )
+        post_audio_mask[needs_additional_steps == torch.iinfo(torch.int64).max] = True
+        sampling_audio_mask = pre_audio_mask & post_audio_mask
+        next_token_ids[:, 1:][~sampling_audio_mask] = audio_pad_id
+
+        current_generation_step[
+            (next_token_ids[:, 0] == audio_bos_token_id)
+            | (next_token_ids[:, 0] == gen_token_id)
+            | (next_token_ids[:, 0] == gen_delay_token_id)
+        ] += 1
+        current_generation_step[next_token_ids[:, 0] == audio_eos_token_id] = 0
+        needs_additional_steps[
+            (needs_additional_steps == torch.iinfo(torch.int64).max)
+            & (next_token_ids[:, 0] == gen_delay_token_id)
+        ] = 0
+        needs_additional_steps[
+            needs_additional_steps != torch.iinfo(torch.int64).max
+        ] += 1
+        needs_additional_steps[needs_additional_steps > channels] = torch.iinfo(
+            torch.int64
+        ).max
+
+        return (
+            current_generation_step,
+            needs_additional_steps,
+            unfinished_sequences,
+            is_audio_stage,
         )

@@ -2556,6 +2556,7 @@ class ModelRunner(AdditionalSampleProcessMixin, ModelRunnerKVCacheMixin):
         logits_output: Union[LogitsProcessorOutput, List[LogitsProcessorOutput]],
         sampling_info: SamplingBatchInfo,
         current_generation_step: torch.Tensor,
+        is_audio_stage: torch.Tensor,
     ):
         # Multi-channel models are not compatible with the current logit bias.
         if self.server_args.multi_channel:
@@ -2563,6 +2564,7 @@ class ModelRunner(AdditionalSampleProcessMixin, ModelRunnerKVCacheMixin):
                 logits_output,
                 sampling_info,
                 current_generation_step,
+                is_audio_stage,
             )
             return
         # NOTE: In overlap mode, the function update_regex_vocab_mask (in sample)
@@ -2597,6 +2599,7 @@ class ModelRunner(AdditionalSampleProcessMixin, ModelRunnerKVCacheMixin):
             logits_output,
             forward_batch.sampling_info,
             forward_batch.current_generation_step,
+            forward_batch.is_audio_stage,
         )
         # Sample the next tokens
         next_token_ids = self.sampler(
@@ -2644,6 +2647,7 @@ class ModelRunner(AdditionalSampleProcessMixin, ModelRunnerKVCacheMixin):
             logits_output,
             forward_batch.sampling_info,
             forward_batch.current_generation_step,
+            forward_batch.is_audio_stage,
         )
 
         # Delegate to sampler for logprob-only computation

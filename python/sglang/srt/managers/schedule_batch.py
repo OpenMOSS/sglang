@@ -1261,6 +1261,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
     # List of per-request reference audio codes (num_codebooks, ref_len).
     # Used during audio decoding (code2wav).
     ref_audio_codes: Optional[List[torch.Tensor]] = None
+
+    # For MOSS-TTS sampling
+    is_audio_stage: torch.Tensor = None  # shape: [b], int64
+
     # For audio decoding
     audio_codes: Optional[List[torch.Tensor]] = (
         None  # List of tensors with shape [code_length] containing audio codes for each request
@@ -1532,6 +1536,15 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                     len(reqs), dtype=torch.int64
                 ).to(self.device, non_blocking=True)
                 self.ref_audio_codes = [None] * len(reqs)
+            elif (
+                self.model_config.hf_config.architectures[0] == "MossTTSDelayWithCodec"
+            ):
+                self.is_audio_stage = torch.zeros(len(reqs), dtype=torch.int64).to(
+                    self.device, non_blocking=True
+                )
+                self.needs_additional_steps = torch.full(
+                    (len(reqs),), torch.iinfo(torch.int64).max, dtype=torch.int64
+                ).to(self.device, non_blocking=True)
 
             self.current_generation_step = torch.zeros(len(reqs), dtype=torch.int64).to(
                 self.device, non_blocking=True
@@ -2221,6 +2234,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             if self.model_config.hf_config.architectures[0] == "MossTTSDWithCodec":
                 self.truncated_input_ids = self.truncated_input_ids[keep_indices_device]
                 self.ref_audio_codes = [self.ref_audio_codes[i] for i in keep_indices]
+            elif (
+                self.model_config.hf_config.architectures[0] == "MossTTSDelayWithCodec"
+            ):
+                self.is_audio_stage = self.is_audio_stage[keep_indices_device]
             self.current_generation_step = self.current_generation_step[
                 keep_indices_device
             ]
@@ -2288,6 +2305,12 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                     [self.truncated_input_ids, other.truncated_input_ids]
                 )
                 self.ref_audio_codes.extend(other.ref_audio_codes)
+            elif (
+                self.model_config.hf_config.architectures[0] == "MossTTSDelayWithCodec"
+            ):
+                self.is_audio_stage = torch.cat(
+                    [self.is_audio_stage, other.is_audio_stage]
+                )
             self.current_generation_step = torch.cat(
                 [self.current_generation_step, other.current_generation_step]
             )
@@ -2386,6 +2409,14 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                 self.ref_audio_codes
                 if get_global_server_args().delay_pattern
                 and self.model_config.hf_config.architectures[0] == "MossTTSDWithCodec"
+                else None
+            ),
+            # For MOSS-TTS
+            is_audio_stage=(
+                self.is_audio_stage
+                if get_global_server_args().delay_pattern
+                and self.model_config.hf_config.architectures[0]
+                == "MossTTSDelayWithCodec"
                 else None
             ),
             current_generation_step=(
@@ -2609,6 +2640,9 @@ class ModelWorkerBatch:
     # List of per-request reference audio codes (num_codebooks, ref_len).
     # Used during audio decoding (code2wav).
     ref_audio_codes: Optional[List[torch.Tensor]] = None
+
+    # For MOSS-TTS
+    is_audio_stage: Optional[torch.Tensor] = None
 
     # For audio decoding
     audio_codes: Optional[List[torch.Tensor]] = (

@@ -18,6 +18,7 @@ from sglang.srt.configs.kimi_vl_moonvit import MoonViTConfig
 from sglang.srt.configs.lfm2 import Lfm2Config
 from sglang.srt.configs.lfm2_moe import Lfm2MoeConfig
 from sglang.srt.configs.longcat_flash import LongcatFlashConfig
+from sglang.srt.configs.moss_tts_delay_with_codec import MossTTSDelayWithCodecConfig
 from sglang.srt.configs.moss_ttsd_with_codec import MossTTSDWithCodecConfig
 from sglang.srt.configs.nano_nemotron_vl import NemotronH_Nano_VL_V2_Config
 from sglang.srt.configs.nemotron_h import NemotronHConfig
@@ -39,6 +40,7 @@ __all__ = [
     "DbrxConfig",
     "DeepseekVL2Config",
     "LongcatFlashConfig",
+    "MossTTSDelayWithCodecConfig",
     "MossTTSDWithCodecConfig",
     "MultiModalityConfig",
     "KimiVLConfig",

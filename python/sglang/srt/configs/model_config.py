@@ -1397,7 +1397,7 @@ def is_audio_model(model_architectures: List[str]):
 
 
 def is_audio_gen_model(model_architectures: List[str]):
-    audio_gen_model_archs = ["MossTTSDWithCodec"]
+    audio_gen_model_archs = ["MossTTSDWithCodec", "MossTTSDelayWithCodec"]
     return any(arch in model_architectures for arch in audio_gen_model_archs)
 
 

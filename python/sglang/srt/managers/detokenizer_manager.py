@@ -17,6 +17,7 @@ import dataclasses
 import logging
 import os
 import signal
+import tempfile
 from collections import OrderedDict, defaultdict
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -27,6 +28,7 @@ import zmq
 
 from sglang.srt.environ import envs
 from sglang.srt.managers.io_struct import (
+    BatchAudioOutput,
     BatchEmbeddingOutput,
     BatchMultimodalDecodeReq,
     BatchStrOutput,
@@ -137,6 +139,7 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
                 (BatchEmbeddingOutput, self.handle_batch_embedding_out),
                 (BatchTokenIDOutput, self.handle_batch_token_id_out),
                 (BatchMultimodalDecodeReq, self.handle_multimodal_decode_req),
+                (BatchAudioOutput, self.handle_batch_audio_out),
                 (FreezeGCReq, self.handle_freeze_gc_req),
             ]
         )
@@ -342,8 +345,67 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
 
         return output_strs
 
+    def _decode_batch_audio_output(self, recv_obj: BatchAudioOutput):
+        bs = len(recv_obj.rids)
+
+        # Initialize decode status
+        read_ids, surr_ids = [], []
+        for i in range(bs):
+            rid = recv_obj.rids[i]
+            if rid not in self.decode_status:
+                s = DecodeStatus(
+                    decoded_text="",
+                    decode_ids=recv_obj.decode_ids[i],
+                    surr_offset=0,
+                    read_offset=recv_obj.read_offsets[i],
+                )
+                self.decode_status[rid] = s
+            else:
+                s = self.decode_status[rid]
+                s.decode_ids.extend(recv_obj.decode_ids[i])
+
+            read_ids.append(
+                self.trim_matched_stop(
+                    s.decode_ids[s.surr_offset :],
+                    recv_obj.finished_reasons[i],
+                    recv_obj.no_stop_trim[i],
+                )
+            )
+            surr_ids.append(s.decode_ids[s.surr_offset : s.read_offset])
+
+        # Incremental decoding
+        output_strs = []
+        for i in range(bs):
+            try:
+                s = self.decode_status[recv_obj.rids[i]]
+            except KeyError:
+                raise RuntimeError(
+                    f"Decode status not found for request {recv_obj.rids[i]}. "
+                    "It may be due to the request being evicted from the decode status due to memory pressure. "
+                    "Please increase the maximum number of requests by setting "
+                    "the SGLANG_DETOKENIZER_MAX_STATES environment variable to a bigger value than the default value. "
+                    f"The current value is {DETOKENIZER_MAX_STATES}. "
+                    "For more details, see: https://github.com/sgl-project/sglang/issues/2812"
+                )
+            import pybase64
+            import torchaudio
+
+            if recv_obj.decoded_wavs[i] is None:
+                incremental_output = " "
+            else:
+                with tempfile.NamedTemporaryFile(suffix=".wav") as tmp_wav_file:
+                    wavform, sample_rate = recv_obj.decoded_wavs[i]
+                    torchaudio.save(tmp_wav_file.name, wavform, sample_rate)
+                    tmp_wav_file.flush()
+                    tmp_wav_file.seek(0)
+                    wav_bytes = tmp_wav_file.read()
+                incremental_output = pybase64.b64encode(wav_bytes).decode("utf-8")
+            output_strs.append(incremental_output)
+
+        return output_strs
+
     def _extract_routed_experts(
-        self, recv_obj: BatchTokenIDOutput
+        self, recv_obj: Union[BatchTokenIDOutput, BatchAudioOutput]
     ) -> list[str | None] | None:
         routed_experts = None
         if recv_obj.routed_experts is not None:
@@ -406,6 +468,48 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
 
     def handle_multimodal_decode_req(self, recv_obj: BatchMultimodalDecodeReq):
         raise NotImplementedError()
+
+    def handle_batch_audio_out(self, recv_obj: BatchAudioOutput):
+        output_strs = self._decode_batch_audio_output(recv_obj)
+        routed_experts = self._extract_routed_experts(recv_obj)
+
+        return BatchStrOutput(
+            rids=recv_obj.rids,
+            http_worker_ipcs=recv_obj.http_worker_ipcs,
+            finished_reasons=recv_obj.finished_reasons,
+            output_strs=output_strs,
+            output_ids=recv_obj.output_ids,
+            prompt_tokens=recv_obj.prompt_tokens,
+            completion_tokens=recv_obj.completion_tokens,
+            cached_tokens=recv_obj.cached_tokens,
+            cached_tokens_details=recv_obj.cached_tokens_details,
+            spec_verify_ct=recv_obj.spec_verify_ct,
+            spec_accepted_tokens=recv_obj.spec_accepted_tokens,
+            spec_acceptance_histogram=recv_obj.spec_acceptance_histogram,
+            input_token_logprobs_val=recv_obj.input_token_logprobs_val,
+            input_token_logprobs_idx=recv_obj.input_token_logprobs_idx,
+            output_token_logprobs_val=recv_obj.output_token_logprobs_val,
+            output_token_logprobs_idx=recv_obj.output_token_logprobs_idx,
+            input_top_logprobs_val=recv_obj.input_top_logprobs_val,
+            input_top_logprobs_idx=recv_obj.input_top_logprobs_idx,
+            output_top_logprobs_val=recv_obj.output_top_logprobs_val,
+            output_top_logprobs_idx=recv_obj.output_top_logprobs_idx,
+            input_token_ids_logprobs_val=recv_obj.input_token_ids_logprobs_val,
+            input_token_ids_logprobs_idx=recv_obj.input_token_ids_logprobs_idx,
+            output_token_ids_logprobs_val=recv_obj.output_token_ids_logprobs_val,
+            output_token_ids_logprobs_idx=recv_obj.output_token_ids_logprobs_idx,
+            output_token_entropy_val=recv_obj.output_token_entropy_val,
+            output_hidden_states=recv_obj.output_hidden_states,
+            routed_experts=routed_experts,
+            customized_info=recv_obj.customized_info,
+            placeholder_tokens_idx=None,
+            placeholder_tokens_val=None,
+            retraction_counts=recv_obj.retraction_counts,
+            token_steps=recv_obj.token_steps,
+            load=recv_obj.load,
+            dp_ranks=recv_obj.dp_ranks,
+            time_stats=recv_obj.time_stats,
+        )
 
     def handle_freeze_gc_req(self, recv_req: FreezeGCReq):
         freeze_gc("Detokenizer Manager")

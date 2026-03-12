@@ -99,6 +99,9 @@ class ForwardMode(IntEnum):
     # Used in dLLM
     DLLM_EXTEND = auto()
 
+    # Used in audio decoding
+    AUDIO_DECODE = auto()
+
     def is_prefill(self):
         return self.is_extend()
 
@@ -183,6 +186,10 @@ class ForwardMode(IntEnum):
 
     def is_dllm_extend(self):
         return self == ForwardMode.DLLM_EXTEND
+
+    def is_audio_decode(self):
+        """Check if this is the audio decode stage (code2wav)."""
+        return self == ForwardMode.AUDIO_DECODE
 
 
 @total_ordering
@@ -377,6 +384,18 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
     # For dumper: request IDs for cross-step sequence tracking
     rids: Optional[List[str]] = None
 
+    # For delay-pattern sampling
+    current_generation_step: torch.Tensor = None
+    truncated_input_ids: torch.Tensor = None
+    needs_additional_steps: torch.Tensor = None
+    unfinished_sequences: torch.Tensor = None
+
+    # For MOSS-TTSD-v0.7
+    ref_audio_codes: Optional[List[torch.Tensor]] = None
+
+    # For audio decoding
+    audio_codes: Optional[List[torch.Tensor]] = None
+
     @classmethod
     def init_new(
         cls,
@@ -528,6 +547,21 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
                 model_runner.lora_manager.fetch_new_loras(set(ret.lora_ids))
 
             model_runner.lora_manager.prepare_lora_batch(ret)
+
+        # For delay-pattern sampling
+        if model_runner.server_args.delay_pattern:
+            ret.current_generation_step = batch.current_generation_step
+            ret.truncated_input_ids = batch.truncated_input_ids
+            ret.needs_additional_steps = batch.needs_additional_steps
+            ret.unfinished_sequences = batch.unfinished_sequences
+            if (
+                model_runner.model_config.hf_config.architectures[0]
+                == "MossTTSDWithCodec"
+            ):
+                ret.ref_audio_codes = batch.ref_audio_codes
+
+        if ret.forward_mode.is_audio_decode():
+            ret.audio_codes = batch.audio_codes
 
         return ret
 

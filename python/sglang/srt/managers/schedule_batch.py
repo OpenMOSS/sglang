@@ -490,7 +490,7 @@ class Req(ReqDllmMixin):
         self,
         rid: str,
         origin_input_text: str,
-        origin_input_ids: List[int],
+        origin_input_ids: Union[List[List[int]], List[int]],
         sampling_params: SamplingParams,
         return_logprob: bool = False,
         top_logprobs_num: int = 0,
@@ -523,6 +523,8 @@ class Req(ReqDllmMixin):
         time_stats: Optional[
             Union[APIServerReqTimeStats, DPControllerReqTimeStats]
         ] = None,
+        truncated_input_ids: Optional[Union[List[List[int]], List[int]]] = None,
+        is_audio_gen_model: bool = False,
     ):
         # Input and output info
         self.rid = rid
@@ -613,6 +615,9 @@ class Req(ReqDllmMixin):
         self.eos_token_ids = eos_token_ids
         self.vocab_size = vocab_size
         self.priority = priority
+
+        # For delay-pattern model
+        self.truncated_input_ids = truncated_input_ids
 
         # For incremental decoding
         # ----- | --------- read_ids -------|
@@ -795,6 +800,10 @@ class Req(ReqDllmMixin):
         # For diffusion LLM
         self.init_diffusion_llm(dllm_config)
 
+        # For audio generation models
+        self.is_audio_gen_model: Optional[bool] = is_audio_gen_model
+        self.audio_decode_result: bytes = None  # Decoded audio bytes
+
     @property
     def seqlen(self) -> int:
         """Get the current sequence length of the request."""
@@ -855,7 +864,23 @@ class Req(ReqDllmMixin):
 
     def finished(self) -> bool:
         # Whether request reached finished condition
-        return self.finished_reason is not None
+        if (self.finished_reason is not None) and (
+            self.is_audio_gen_model == (self.audio_decode_result is not None)
+        ):
+            return True
+        else:
+            return False
+
+    def is_audio_decoding(self) -> bool:
+        # Whether request is in audio decoding stage
+        return (
+            (self.finished_reason is not None)
+            and self.is_audio_gen_model
+            and (self.audio_decode_result is None)
+        )
+
+    def is_audio_gen(self) -> bool:
+        return self.is_audio_gen_model
 
     def init_next_round_input(self, tree_cache: Optional[BasePrefixCache] = None):
         if self.is_dllm():
@@ -981,7 +1006,9 @@ class Req(ReqDllmMixin):
 
         return False
 
-    def _check_token_based_finish(self, new_accepted_tokens: List[int]) -> bool:
+    def _check_token_based_finish(
+        self, new_accepted_tokens: List[int], this_peer_finished: Optional[bool] = None
+    ) -> bool:
         if self.sampling_params.ignore_eos:
             return False
 
@@ -997,6 +1024,8 @@ class Req(ReqDllmMixin):
                 matched_eos |= token_id == self.tokenizer.eos_token_id
                 if self.tokenizer.additional_stop_token_ids:
                     matched_eos |= token_id in self.tokenizer.additional_stop_token_ids
+            if this_peer_finished is not None:
+                matched_eos = matched_eos and this_peer_finished
             if matched_eos:
                 self.finished_reason = FINISH_MATCHED_TOKEN(matched=token_id)
                 matched_pos = len(self.output_ids) - len(new_accepted_tokens) + i
@@ -1046,7 +1075,9 @@ class Req(ReqDllmMixin):
 
         return False
 
-    def check_finished(self, new_accepted_len: int = 1):
+    def check_finished(
+        self, new_accepted_len: int = 1, this_peer_finished: Optional[bool] = None
+    ):
         if self.finished():
             return
 
@@ -1068,8 +1099,14 @@ class Req(ReqDllmMixin):
                 return
 
         new_accepted_tokens = self.output_ids[-new_accepted_len:]
+        if get_global_server_args().multi_channel and isinstance(
+            new_accepted_tokens[0], list
+        ):
+            new_accepted_tokens = [new_accepted_tokens[0][0]]
 
-        if self._check_token_based_finish(new_accepted_tokens):
+        if self._check_token_based_finish(
+            new_accepted_tokens, this_peer_finished=this_peer_finished
+        ):
             return
 
         if self._check_vocab_boundary_finish(new_accepted_tokens):
@@ -1211,6 +1248,23 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
     # The output locations of the KV cache
     out_cache_loc: torch.Tensor = None  # shape: [b], int64
     output_ids: torch.Tensor = None  # shape: [b], int64
+
+    # For delay-pattern sampling
+    current_generation_step: torch.Tensor = None  # shape: [b], int64
+    truncated_input_ids: torch.Tensor = (
+        None  # shape: [b, channels - 1, channels], int64
+    )
+    needs_additional_steps: torch.Tensor = None  # shape: [b], int64
+    unfinished_sequences: torch.Tensor = None  # shape: [b], int64
+
+    # For MOSS-TTSD-v0.7
+    # List of per-request reference audio codes (num_codebooks, ref_len).
+    # Used during audio decoding (code2wav).
+    ref_audio_codes: Optional[List[torch.Tensor]] = None
+    # For audio decoding
+    audio_codes: Optional[List[torch.Tensor]] = (
+        None  # List of tensors with shape [code_length] containing audio codes for each request
+    )
 
     # For hybrid GDN prefix cache
     mamba_track_indices: torch.Tensor = None  # shape: [b], int64
@@ -1454,6 +1508,38 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             r.token_type_ids for r in reqs if r.token_type_ids is not None
         ]
 
+        if get_global_server_args().delay_pattern and (self.model_config.channels > 1):
+            if self.model_config.hf_config.architectures[0] == "MossTTSDWithCodec":
+                channels = self.model_config.channels
+                pad_row = torch.as_tensor(
+                    self.model_config.hf_config.pad_token, dtype=torch.int64
+                )
+                per_req_truncated = []
+                for r in reqs:
+                    t = torch.as_tensor(r.truncated_input_ids, dtype=torch.int64)
+                    if not (
+                        t.dim() == 2
+                        and t.shape[0] == channels - 1
+                        and t.shape[1] == channels
+                    ):
+                        t = pad_row.unsqueeze(0).repeat(channels - 1, 1)
+                    per_req_truncated.append(t)
+
+                truncated_input_ids_tensor = torch.stack(per_req_truncated, dim=0).to(
+                    self.device, non_blocking=True
+                )
+                self.needs_additional_steps = -1 * torch.ones(
+                    len(reqs), dtype=torch.int64
+                ).to(self.device, non_blocking=True)
+                self.ref_audio_codes = [None] * len(reqs)
+
+            self.current_generation_step = torch.zeros(len(reqs), dtype=torch.int64).to(
+                self.device, non_blocking=True
+            )
+            self.unfinished_sequences = torch.ones(len(reqs), dtype=torch.int64).to(
+                self.device, non_blocking=True
+            )
+
         _pin = is_pin_memory_available(self.device)
         input_ids_tensor = torch.tensor(
             list(chain.from_iterable(input_ids)), dtype=torch.int64, pin_memory=_pin
@@ -1657,6 +1743,13 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
 
         if self.model_config.is_encoder_decoder:
             self.prepare_encoder_info_extend(input_ids, seq_lens)
+
+        if (
+            get_global_server_args().delay_pattern
+            and (self.model_config.channels > 1)
+            and (self.model_config.hf_config.architectures[0] == "MossTTSDWithCodec")
+        ):
+            self.truncated_input_ids = truncated_input_ids_tensor
 
         # Build sampling info
         self.sampling_info = SamplingBatchInfo.from_schedule_batch(
@@ -1967,6 +2060,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         # Update fields
         self.input_ids = self.output_ids
         self.output_ids = None
+        self.audio_codes = None
 
         if self.model_config.is_encoder_decoder:
             self.prepare_encoder_info_decode()
@@ -2022,6 +2116,19 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                 .pin_memory()
                 .to(device=self.device, non_blocking=True)
             )
+
+    def prepare_for_audio_decode(self):
+        self.forward_mode = ForwardMode.AUDIO_DECODE
+
+        # Update fields
+        self.audio_codes = [
+            (
+                torch.tensor(req.output_ids).to(self.device)
+                if req.is_audio_decoding()
+                else None
+            )
+            for req in self.reqs
+        ]
 
     def maybe_wait_verify_done(self):
         if self.is_spec_v2:
@@ -2110,6 +2217,18 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                 has_been_filtered=has_been_filtered,
             )
 
+        if get_global_server_args().delay_pattern:
+            if self.model_config.hf_config.architectures[0] == "MossTTSDWithCodec":
+                self.truncated_input_ids = self.truncated_input_ids[keep_indices_device]
+                self.ref_audio_codes = [self.ref_audio_codes[i] for i in keep_indices]
+            self.current_generation_step = self.current_generation_step[
+                keep_indices_device
+            ]
+            self.needs_additional_steps = self.needs_additional_steps[
+                keep_indices_device
+            ]
+            self.unfinished_sequences = self.unfinished_sequences[keep_indices_device]
+
     def merge_batch(self, other: "ScheduleBatch"):
         # In the regular scheduler path:
         # 1) self is always prefill, whose seq_lens is not a future
@@ -2162,6 +2281,22 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
 
         if self.spec_info:
             self.spec_info.merge_batch(other.spec_info)
+
+        if get_global_server_args().delay_pattern:
+            if self.model_config.hf_config.architectures[0] == "MossTTSDWithCodec":
+                self.truncated_input_ids = torch.cat(
+                    [self.truncated_input_ids, other.truncated_input_ids]
+                )
+                self.ref_audio_codes.extend(other.ref_audio_codes)
+            self.current_generation_step = torch.cat(
+                [self.current_generation_step, other.current_generation_step]
+            )
+            self.needs_additional_steps = torch.cat(
+                [self.needs_additional_steps, other.needs_additional_steps]
+            )
+            self.unfinished_sequences = torch.cat(
+                [self.unfinished_sequences, other.unfinished_sequences]
+            )
 
     def get_model_worker_batch(
         self, seq_lens_cpu_cache: Optional[torch.Tensor] = None
@@ -2239,6 +2374,37 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             mamba_track_indices=self.mamba_track_indices,
             mamba_track_mask=self.mamba_track_mask,
             mamba_track_seqlens=self.mamba_track_seqlens,
+            # For delay-pattern sampling
+            truncated_input_ids=(
+                self.truncated_input_ids
+                if get_global_server_args().delay_pattern
+                and self.model_config.hf_config.architectures[0] == "MossTTSDWithCodec"
+                else None
+            ),
+            # For MOSS-TTSD v0.7
+            ref_audio_codes=(
+                self.ref_audio_codes
+                if get_global_server_args().delay_pattern
+                and self.model_config.hf_config.architectures[0] == "MossTTSDWithCodec"
+                else None
+            ),
+            current_generation_step=(
+                self.current_generation_step
+                if get_global_server_args().delay_pattern
+                else None
+            ),
+            needs_additional_steps=(
+                self.needs_additional_steps
+                if get_global_server_args().delay_pattern
+                else None
+            ),
+            unfinished_sequences=(
+                self.unfinished_sequences
+                if get_global_server_args().delay_pattern
+                else None
+            ),
+            # For audio generation
+            audio_codes=self.audio_codes,
         )
 
     def copy(self):
@@ -2430,3 +2596,21 @@ class ModelWorkerBatch:
     mamba_track_indices: Optional[torch.Tensor] = None  # shape: [b], int64
     mamba_track_mask: Optional[torch.Tensor] = None  # shape: [b], bool
     mamba_track_seqlens: Optional[torch.Tensor] = None  # shape: [b], int64
+
+    # For delay-pattern sampling
+    current_generation_step: torch.Tensor = None  # shape: [b], int64
+    truncated_input_ids: torch.Tensor = (
+        None  # shape: [b, channels - 1, channels], int64
+    )
+    needs_additional_steps: torch.Tensor = None  # shape: [b], int64
+    unfinished_sequences: torch.Tensor = None  # shape: [b], int64
+
+    # For MOSS-TTSD-v0.7
+    # List of per-request reference audio codes (num_codebooks, ref_len).
+    # Used during audio decoding (code2wav).
+    ref_audio_codes: Optional[List[torch.Tensor]] = None
+
+    # For audio decoding
+    audio_codes: Optional[List[torch.Tensor]] = (
+        None  # List of tensors with shape [generated_audio_seq_len], int64
+    )

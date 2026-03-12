@@ -157,6 +157,10 @@ class ModelConfig:
         # Config draft model
         self._config_draft_model()
 
+        # Normalize multi-channel metadata for models that may store it as
+        # either `channels` or `n_vq` in HF config.
+        self._init_channels()
+
         # Check model type
         self.attention_chunk_size = getattr(
             self.hf_text_config, "attention_chunk_size", None
@@ -177,6 +181,11 @@ class ModelConfig:
         self.is_audio_model = enable_multimodal and is_audio_model(
             self.hf_config.architectures
         )
+        self.is_audio_gen = enable_multimodal and is_audio_gen_model(
+            self.hf_config.architectures
+        )
+        if self.is_audio_gen:
+            self.is_multimodal = True
         # TODO: requires further polishing
         self.is_image_understandable_model = enable_multimodal and hasattr(
             self.hf_config, "vision_config"
@@ -339,6 +348,36 @@ class ModelConfig:
         if is_draft_model and self.hf_config.architectures[0] == "NemotronHForCausalLM":
             self.hf_config.architectures[0] = "NemotronHForCausalLMMTP"
             self.hf_config.num_nextn_predict_layers = 1
+
+    def _init_channels(self):
+        self.channels = 1
+        channels = getattr(self.hf_config, "channels", None)
+        n_vq = getattr(self.hf_config, "n_vq", None)
+
+        source = channels if channels else n_vq
+        if source is None:
+            return
+
+        try:
+            normalized_channels = int(source)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid multi-channel config value: channels=%s, n_vq=%s. "
+                "Skip channels normalization.",
+                channels,
+                n_vq,
+            )
+            return
+
+        if normalized_channels < 1:
+            logger.warning(
+                "Invalid multi-channel config value: channels=%d. "
+                "Falling back to 1.",
+                normalized_channels,
+            )
+            normalized_channels = 1
+
+        self.channels = normalized_channels
 
     def _derive_hybrid_model(self):
         # Use self.context_len after it has been initialized to prevent using context_len which may be None.
@@ -1355,6 +1394,11 @@ def is_audio_model(model_architectures: List[str]):
         "WhisperForConditionalGeneration",
     ]
     return any(model in model_architectures for model in models)
+
+
+def is_audio_gen_model(model_architectures: List[str]):
+    audio_gen_model_archs = ["MossTTSDWithCodec"]
+    return any(arch in model_architectures for arch in audio_gen_model_archs)
 
 
 def is_encoder_decoder_model(model_architectures: List[str]):

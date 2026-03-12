@@ -117,6 +117,9 @@ from sglang.srt.lora.lora_registry import LoRARef
 from sglang.srt.managers.schedule_batch import sanity_check_mm_pad_shift_value
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+from sglang.srt.model_executor.additional_sample_process_mixin import (
+    AdditionalSampleProcessMixin,
+)
 from sglang.srt.model_executor.cpu_graph_runner import CPUGraphRunner
 from sglang.srt.model_executor.cuda_graph_runner import (
     CudaGraphRunner,
@@ -278,7 +281,7 @@ class ModelRunnerOutput:
     expert_distribution_metrics: Optional[ExpertDistributionMetrics] = None
 
 
-class ModelRunner(ModelRunnerKVCacheMixin):
+class ModelRunner(AdditionalSampleProcessMixin, ModelRunnerKVCacheMixin):
     """ModelRunner runs the forward passes of the models."""
 
     def __init__(
@@ -432,6 +435,8 @@ class ModelRunner(ModelRunnerKVCacheMixin):
         # For weight updates
         self._model_update_group = {}
         self._weights_send_group = {}
+
+        super().__init__()
 
     def init_mindspore_runner(self):
         # Init the mindspore runner
@@ -1927,6 +1932,12 @@ class ModelRunner(ModelRunnerKVCacheMixin):
             num_tokens_per_bs=num_tokens_per_bs,
             cache_loc_dtype=torch.int64,
             enable_mamba_track=False,
+            channels=self.model_config.channels,
+            vocab_size_list=(
+                self.model_config.hf_config.vocab_size_list
+                if self.server_args.multi_channel
+                else None
+            ),
         )
         buffers.num_token_non_padded[...] = num_tokens
 
@@ -2379,6 +2390,12 @@ class ModelRunner(ModelRunnerKVCacheMixin):
             **kwargs,
         )
 
+    def forward_audio_decode(self, forward_batch: ForwardBatch) -> List[torch.Tensor]:
+        return self.model.batch_decode(
+            forward_batch.audio_codes,
+            forward_batch,
+        )
+
     def forward_split_prefill(
         self,
         forward_batch: ForwardBatch,
@@ -2535,8 +2552,19 @@ class ModelRunner(ModelRunnerKVCacheMixin):
         return ModelRunnerOutput(logits_output=ret, can_run_graph=can_run_graph)
 
     def _preprocess_logits(
-        self, logits_output: LogitsProcessorOutput, sampling_info: SamplingBatchInfo
+        self,
+        logits_output: Union[LogitsProcessorOutput, List[LogitsProcessorOutput]],
+        sampling_info: SamplingBatchInfo,
+        current_generation_step: torch.Tensor,
     ):
+        # Multi-channel models are not compatible with the current logit bias.
+        if self.server_args.multi_channel:
+            logits_output[:] = self.preprocess_logits(
+                logits_output,
+                sampling_info,
+                current_generation_step,
+            )
+            return
         # NOTE: In overlap mode, the function update_regex_vocab_mask (in sample)
         #       was executed after we processed last batch's results.
 
@@ -2565,7 +2593,11 @@ class ModelRunner(ModelRunnerKVCacheMixin):
                 axis=-1,
             )
 
-        self._preprocess_logits(logits_output, forward_batch.sampling_info)
+        self._preprocess_logits(
+            logits_output,
+            forward_batch.sampling_info,
+            forward_batch.current_generation_step,
+        )
         # Sample the next tokens
         next_token_ids = self.sampler(
             logits_output,
@@ -2580,6 +2612,12 @@ class ModelRunner(ModelRunnerKVCacheMixin):
                 else forward_batch.seq_lens - 1
             ),
         )
+        # Postprocess sampled tokens
+        self._postprocess_tokens(
+            next_token_ids,
+            forward_batch,
+        )
+
         return next_token_ids
 
     def compute_logprobs_only(
@@ -2602,7 +2640,11 @@ class ModelRunner(ModelRunnerKVCacheMixin):
             return
 
         # Preprocess logits (same as in sample method)
-        self._preprocess_logits(logits_output, forward_batch.sampling_info)
+        self._preprocess_logits(
+            logits_output,
+            forward_batch.sampling_info,
+            forward_batch.current_generation_step,
+        )
 
         # Delegate to sampler for logprob-only computation
         # This populates logits_output with requested token probabilities

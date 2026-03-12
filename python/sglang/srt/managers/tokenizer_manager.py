@@ -230,6 +230,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
         self.model_config = model_config_class.from_server_args(server_args)
         self.is_generation = self.model_config.is_generation
         self.is_image_gen = self.model_config.is_image_gen
+        self.is_audio_gen = self.model_config.is_audio_gen
         self.context_len = self.model_config.context_len
         self.image_token_id = self.model_config.image_token_id
         self.max_req_input_len = None  # Will be set later in engine.py
@@ -512,6 +513,11 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
         async with self.is_pause_cond:
             await self.is_pause_cond.wait_for(lambda: not self.is_pause)
 
+        if self.server_args.delay_pattern:
+            if obj.sampling_params.get("max_new_tokens") is None:
+                obj.sampling_params["max_new_tokens"] = 128
+            obj.sampling_params["max_new_tokens"] += self.model_config.channels
+
         async with self.model_update_lock.reader_lock:
             await self._validate_and_resolve_lora(obj)
 
@@ -705,7 +711,13 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                     input_text, is_cross_encoder_request
                 )
 
-        if self.mm_processor and obj.contains_mm_input():
+        if self.mm_processor and (
+            obj.contains_mm_input()
+            or (
+                self.model_config.hf_config.architectures[0] == "MossTTSDWithCodec"
+                and input_text is not None
+            )
+        ):
             if obj.image_data is not None and not isinstance(obj.image_data, list):
                 obj.image_data = [obj.image_data]
             if obj.video_data is not None and not isinstance(obj.video_data, list):

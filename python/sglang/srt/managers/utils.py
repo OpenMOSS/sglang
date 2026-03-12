@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 
 @dataclasses.dataclass
 class GenerationBatchResult:
-    logits_output: Optional[LogitsProcessorOutput] = None
+    logits_output: Optional[
+        Union[LogitsProcessorOutput, List[LogitsProcessorOutput]]
+    ] = None
     pp_hidden_states_proxy_tensors: Optional[PPProxyTensors] = None
     next_token_ids: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None
     num_accepted_tokens: int = 0
@@ -48,6 +50,9 @@ class GenerationBatchResult:
 
     # metrics
     expert_distribution_metrics: Optional[ExpertDistributionMetrics] = None
+
+    # For audio decoding
+    audio_wavs: Optional[List[torch.Tensor]] = None
 
     def copy_to_cpu(self, return_logprob: bool):
         """Copy tensors to CPU in overlap scheduling.
@@ -74,6 +79,11 @@ class GenerationBatchResult:
 
         if (x := self.expert_distribution_metrics) is not None:
             x.copy_to_cpu()
+
+        if self.audio_wavs is not None:
+            self.audio_wavs = [
+                wav.to("cpu", non_blocking=True) for wav in self.audio_wavs
+            ]
 
         self.copy_done.record()
 

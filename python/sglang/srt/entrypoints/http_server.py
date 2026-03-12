@@ -511,6 +511,13 @@ async def health_generate(request: Request) -> Response:
         gri = _global_state.tokenizer_manager.get_image_gen_health_check_request(
             rid, sampling_params
         )
+    elif _global_state.tokenizer_manager.is_audio_gen:
+        gri = GenerateReqInput(
+            rid=rid,
+            text="Hello World",
+            sampling_params=sampling_params,
+            log_metrics=False,
+        )
     elif _global_state.tokenizer_manager.is_generation:
         gri = GenerateReqInput(
             rid=rid,

@@ -517,6 +517,21 @@ class TpModelWorker(BaseTpWorker):
                         logits_output, model_worker_batch
                     )
 
+            if self.model_runner.server_args.delay_pattern:
+                (
+                    model_worker_batch.current_generation_step,
+                    model_worker_batch.truncated_input_ids,
+                    model_worker_batch.ref_audio_codes,
+                    model_worker_batch.needs_additional_steps,
+                    model_worker_batch.unfinished_sequences,
+                ) = (
+                    forward_batch.current_generation_step,
+                    forward_batch.truncated_input_ids,
+                    forward_batch.ref_audio_codes,
+                    forward_batch.needs_additional_steps,
+                    forward_batch.unfinished_sequences,
+                )
+
             return batch_result
         else:
             out = self.model_runner.forward(
@@ -555,3 +570,17 @@ class TpModelWorker(BaseTpWorker):
         )
         batch_result.next_token_ids = next_token_ids
         return batch_result
+
+    def forward_batch_audio_decode(self, batch: ScheduleBatch):
+        # model_worker_batch = batch.get_model_worker_batch()
+        forward_batch = ForwardBatch.init_new(batch, self.model_runner)
+
+        if self.pp_group.is_last_rank:
+            if forward_batch.forward_mode.is_audio_decode():
+                # Audio decoding forward
+                audio_wavs = self.model_runner.forward_audio_decode(
+                    forward_batch,
+                )
+                return GenerationBatchResult(
+                    audio_wavs=audio_wavs,
+                )

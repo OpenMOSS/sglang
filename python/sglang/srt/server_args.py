@@ -719,6 +719,12 @@ class ServerArgs:
     # For forward hooks
     forward_hooks: Optional[List[dict[str, Any]]] = None
 
+    # For multi-channel model support
+    multi_channel: Optional[bool] = None
+
+    # For delay-pattern model support
+    delay_pattern: Optional[bool] = None
+
     def __post_init__(self):
         """
         Orchestrates the handling of various server arguments, ensuring proper configuration and validation.
@@ -814,6 +820,9 @@ class ServerArgs:
 
         # Handle diffusion LLM inference.
         self._handle_dllm_inference()
+
+        # Handle multi-channel and delay-pattern model configurations.
+        self._handle_multi_channel_and_delay_pattern()
 
         # Handle debug utilities.
         self._handle_debug_utils()
@@ -3118,6 +3127,20 @@ class ServerArgs:
             )
             self.enable_mixed_chunk = False
 
+    def _handle_multi_channel_and_delay_pattern(self):
+        # For delay-pattern model support
+        # If we use delay-pattern model, it must be a multi-channel model.
+        # And for delay-pattern sampling, overlap mode must be disabled.
+        if self.delay_pattern:
+            if not self.multi_channel:
+                logger.warning("Delay-pattern model requires multi-channel support.")
+            self.multi_channel = True
+            if self.disable_overlap_schedule:
+                logger.warning(
+                    "Overlap scheduling is disabled for delay-pattern model."
+                )
+            self.disable_overlap_schedule = True
+
     def _handle_other_validations(self):
         # Handle model inference tensor dump.
         if self.debug_tensor_dump_output_folder is not None:
@@ -5408,6 +5431,20 @@ class ServerArgs:
             default=ServerArgs.limit_mm_data_per_request,
             help="Limit the number of multimodal inputs per request. "
             'e.g. \'{"image": 1, "video": 1, "audio": 1}\'',
+        )
+
+        # For multi-channel model support
+        parser.add_argument(
+            "--multi-channel",
+            action="store_true",
+            help="Enable multi-channel model support.",
+        )
+
+        # For delay-pattern model support
+        parser.add_argument(
+            "--delay-pattern",
+            action="store_true",
+            help="Enable delay-pattern model support.",
         )
 
         # For checkpoint decryption

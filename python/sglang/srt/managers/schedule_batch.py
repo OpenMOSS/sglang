@@ -882,6 +882,16 @@ class Req(ReqDllmMixin):
     def is_audio_gen(self) -> bool:
         return self.is_audio_gen_model
 
+    def _normalize_token_for_finish(self, token_id):
+        if get_global_server_args().multi_channel:
+            if isinstance(token_id, torch.Tensor):
+                if token_id.ndim == 0:
+                    return int(token_id.item())
+                return int(token_id.reshape(-1)[0].item())
+            if isinstance(token_id, (list, tuple)):
+                return token_id[0]
+        return token_id
+
     def init_next_round_input(self, tree_cache: Optional[BasePrefixCache] = None):
         if self.is_dllm():
             self._init_fill_ids_for_dllm()
@@ -975,7 +985,12 @@ class Req(ReqDllmMixin):
         )
 
         tail_len = min(max_len_tail_str, len(self.output_ids))
-        return self.tokenizer.decode(self.output_ids[-tail_len:])
+        tail_tokens = self.output_ids[-tail_len:]
+        if get_global_server_args().multi_channel:
+            tail_tokens = [
+                self._normalize_token_for_finish(token) for token in tail_tokens
+            ]
+        return self.tokenizer.decode(tail_tokens)
 
     def check_match_stop_str_prefix(self) -> bool:
         """
@@ -1095,14 +1110,15 @@ class Req(ReqDllmMixin):
 
         if self.grammar is not None:
             if self.grammar.is_terminated():
-                self.finished_reason = FINISH_MATCHED_TOKEN(matched=self.output_ids[-1])
+                self.finished_reason = FINISH_MATCHED_TOKEN(
+                    matched=self._normalize_token_for_finish(self.output_ids[-1])
+                )
                 return
 
-        new_accepted_tokens = self.output_ids[-new_accepted_len:]
-        if get_global_server_args().multi_channel and isinstance(
-            new_accepted_tokens[0], list
-        ):
-            new_accepted_tokens = [new_accepted_tokens[0][0]]
+        new_accepted_tokens = [
+            self._normalize_token_for_finish(token)
+            for token in self.output_ids[-new_accepted_len:]
+        ]
 
         if self._check_token_based_finish(
             new_accepted_tokens, this_peer_finished=this_peer_finished

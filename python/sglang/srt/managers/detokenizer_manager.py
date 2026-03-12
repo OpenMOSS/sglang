@@ -352,7 +352,14 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
         read_ids, surr_ids = [], []
         for i in range(bs):
             rid = recv_obj.rids[i]
-            if rid not in self.decode_status:
+            if self.is_health_check_request(rid):
+                s = DecodeStatus(
+                    decoded_text="",
+                    decode_ids=recv_obj.decode_ids[i],
+                    surr_offset=0,
+                    read_offset=recv_obj.read_offsets[i],
+                )
+            elif rid not in self.decode_status:
                 s = DecodeStatus(
                     decoded_text="",
                     decode_ids=recv_obj.decode_ids[i],
@@ -376,17 +383,26 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
         # Incremental decoding
         output_strs = []
         for i in range(bs):
-            try:
-                s = self.decode_status[recv_obj.rids[i]]
-            except KeyError:
-                raise RuntimeError(
-                    f"Decode status not found for request {recv_obj.rids[i]}. "
-                    "It may be due to the request being evicted from the decode status due to memory pressure. "
-                    "Please increase the maximum number of requests by setting "
-                    "the SGLANG_DETOKENIZER_MAX_STATES environment variable to a bigger value than the default value. "
-                    f"The current value is {DETOKENIZER_MAX_STATES}. "
-                    "For more details, see: https://github.com/sgl-project/sglang/issues/2812"
+            rid = recv_obj.rids[i]
+            if self.is_health_check_request(rid):
+                s = DecodeStatus(
+                    decoded_text="",
+                    decode_ids=recv_obj.decode_ids[i],
+                    surr_offset=0,
+                    read_offset=recv_obj.read_offsets[i],
                 )
+            else:
+                try:
+                    s = self.decode_status[rid]
+                except KeyError:
+                    raise RuntimeError(
+                        f"Decode status not found for request {rid}. "
+                        "It may be due to the request being evicted from the decode status due to memory pressure. "
+                        "Please increase the maximum number of requests by setting "
+                        "the SGLANG_DETOKENIZER_MAX_STATES environment variable to a bigger value than the default value. "
+                        f"The current value is {DETOKENIZER_MAX_STATES}. "
+                        "For more details, see: https://github.com/sgl-project/sglang/issues/2812"
+                    )
             import pybase64
             import torchaudio
 
@@ -400,6 +416,8 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
                     tmp_wav_file.seek(0)
                     wav_bytes = tmp_wav_file.read()
                 incremental_output = pybase64.b64encode(wav_bytes).decode("utf-8")
+            if recv_obj.finished_reasons[i] is not None and rid in self.decode_status:
+                del self.decode_status[rid]
             output_strs.append(incremental_output)
 
         return output_strs

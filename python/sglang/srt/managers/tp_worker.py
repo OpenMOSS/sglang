@@ -524,12 +524,14 @@ class TpModelWorker(BaseTpWorker):
                     model_worker_batch.ref_audio_codes,
                     model_worker_batch.needs_additional_steps,
                     model_worker_batch.unfinished_sequences,
+                    model_worker_batch.is_audio_stage,
                 ) = (
                     forward_batch.current_generation_step,
                     forward_batch.truncated_input_ids,
                     forward_batch.ref_audio_codes,
                     forward_batch.needs_additional_steps,
                     forward_batch.unfinished_sequences,
+                    forward_batch.is_audio_stage,
                 )
 
             return batch_result

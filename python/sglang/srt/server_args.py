@@ -720,10 +720,10 @@ class ServerArgs:
     forward_hooks: Optional[List[dict[str, Any]]] = None
 
     # For multi-channel model support
-    multi_channel: Optional[bool] = None
+    multi_channel: bool = False
 
     # For delay-pattern model support
-    delay_pattern: Optional[bool] = None
+    delay_pattern: bool = False
 
     def __post_init__(self):
         """

@@ -2522,12 +2522,14 @@ class Scheduler(
                     batch.ref_audio_codes,
                     batch.needs_additional_steps,
                     batch.unfinished_sequences,
+                    batch.is_audio_stage,
                 ) = (
                     worker_batch_or_batch.current_generation_step,
                     worker_batch_or_batch.truncated_input_ids,
                     worker_batch_or_batch.ref_audio_codes,
                     worker_batch_or_batch.needs_additional_steps,
                     worker_batch_or_batch.unfinished_sequences,
+                    worker_batch_or_batch.is_audio_stage,
                 )
 
             # These 2 values are needed for processing the output, but the values can be

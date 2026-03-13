@@ -564,6 +564,7 @@ def create_sampler(backend: Optional[str] = None) -> "Sampler":
 
     server_args = get_global_server_args()
     backend = backend or (server_args.sampling_backend if server_args else None)
+    is_multi_channel = bool(getattr(server_args, "multi_channel", False))
 
     if backend in _CUSTOM_SAMPLER_FACTORIES:
         sampler = _CUSTOM_SAMPLER_FACTORIES[backend]()
@@ -574,9 +575,7 @@ def create_sampler(backend: Optional[str] = None) -> "Sampler":
         return sampler
 
     if backend is None or backend in _BUILT_IN_SAMPLING_BACKENDS:
-        return (
-            Sampler() if server_args.multi_channel is False else MultiChannelSampler()
-        )
+        return MultiChannelSampler() if is_multi_channel else Sampler()
 
     raise ValueError(
         f"Unknown sampling backend '{backend}'. Register it via register_sampler_backend()."

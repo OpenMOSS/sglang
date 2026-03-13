@@ -393,6 +393,9 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
     # For MOSS-TTSD-v0.7
     ref_audio_codes: Optional[List[torch.Tensor]] = None
 
+    # For MOSS-TTS sampling
+    is_audio_stage: torch.Tensor = None
+
     # For audio decoding
     audio_codes: Optional[List[torch.Tensor]] = None
 
@@ -559,6 +562,11 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
                 == "MossTTSDWithCodec"
             ):
                 ret.ref_audio_codes = batch.ref_audio_codes
+            elif (
+                model_runner.model_config.hf_config.architectures[0]
+                == "MossTTSDelayWithCodec"
+            ):
+                ret.is_audio_stage = batch.is_audio_stage
 
         if ret.forward_mode.is_audio_decode():
             ret.audio_codes = batch.audio_codes

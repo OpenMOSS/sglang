@@ -37,6 +37,7 @@ class MossTTSDelayWithCodecMultimodalProcessor(BaseMultimodalProcessor):
 </user_inst>"""
         self.TOKEN_REGEX = re.compile(r"\$\{token:(\d+)\}")
         self.INSTRUCTION_REGEX = re.compile(r"\$\{instruction:(.*?)\}")
+        self.AMBIENT_SOUND_REGEX = re.compile(r"\$\{ambient_sound:(.*?)\}")
         self.AUDIO_SAMPLE_RATE = 24000
         self.mm_tokens = MultimodalSpecialTokens(
             audio_token=self.AUDIO_TOKEN,
@@ -140,6 +141,7 @@ class MossTTSDelayWithCodecMultimodalProcessor(BaseMultimodalProcessor):
         # Extract tokens from input_text using TOKEN_REGEX
         tokens = None
         instruction = None
+        ambient_sound = None
         if input_text:
             token_match = self.TOKEN_REGEX.match(input_text)
             if token_match:
@@ -151,6 +153,11 @@ class MossTTSDelayWithCodecMultimodalProcessor(BaseMultimodalProcessor):
                 instruction = instruction_match.group(1)
                 input_text = self.INSTRUCTION_REGEX.sub("", input_text, count=1)
 
+            ambient_sound_match = self.AMBIENT_SOUND_REGEX.match(input_text)
+            if ambient_sound_match:
+                ambient_sound = ambient_sound_match.group(1)
+                input_text = self.AMBIENT_SOUND_REGEX.sub("", input_text, count=1)
+
         input_text = "" if input_text is None else str(self.normalize_text(input_text))
 
         text = (
@@ -159,7 +166,7 @@ class MossTTSDelayWithCodecMultimodalProcessor(BaseMultimodalProcessor):
             .replace("{volume}", str(None))
             .replace("{quality}", str(None))
             .replace("{sound_event}", str(None))
-            .replace("{ambient_sound}", str(None))
+            .replace("{ambient_sound}", str(ambient_sound))
             .replace("{language}", str(None))
             .replace("{text}", str(input_text))
         )

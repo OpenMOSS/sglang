@@ -14,11 +14,13 @@ class AdditionalSampleProcessMixin:
             "MossTTSDWithCodec": self.moss_ttsd_postprocess_tokens,
             "MossTTSDForCausalLM": self.moss_ttsd_postprocess_tokens,
             "MossTTSDelayWithCodec": self.moss_tts_delay_postprocess_tokens,
+            "MossTTSDdelayWithCodec": self.moss_tts_delay_postprocess_tokens,
         }
         self._preprocess_dispatcher = {
             "MossTTSDWithCodec": self.moss_ttsd_preprocess_logits,
             "MossTTSDForCausalLM": self.moss_ttsd_preprocess_logits,
             "MossTTSDelayWithCodec": self.moss_tts_delay_preprocess_logits,
+            "MossTTSDdelayWithCodec": self.moss_tts_delay_preprocess_logits,
         }
 
     def preprocess_logits(
@@ -219,9 +221,9 @@ class AdditionalSampleProcessMixin:
         pre_exclude_mask0 = torch.tensor(
             [
                 self.model_config.hf_config.text_pad_id,
-                self.model_config.hf_config.gen_token_id,
-                self.model_config.hf_config.gen_delay_token_id,
-                self.model_config.hf_config.audio_eos_token_id,
+                self.model_config.hf_config.audio_assistant_gen_slot_token_id,
+                self.model_config.hf_config.audio_assistant_delay_slot_token_id,
+                self.model_config.hf_config.audio_end_token_id,
             ],
             device=logits_output[0].next_token_logits.device,
         )
@@ -231,8 +233,8 @@ class AdditionalSampleProcessMixin:
         ).bool()
         pre_exclude_mask1[
             [
-                self.model_config.hf_config.gen_token_id,
-                self.model_config.hf_config.gen_delay_token_id,
+                self.model_config.hf_config.audio_assistant_gen_slot_token_id,
+                self.model_config.hf_config.audio_assistant_delay_slot_token_id,
             ]
         ] = False
         audio_stage_mask = is_audio_stage.bool()
@@ -267,7 +269,7 @@ class AdditionalSampleProcessMixin:
                 indices, self.model_config.hf_config.eos_token_id
             ] = -torch.inf
         for logits in logits_output[1:]:
-            logits.next_token_logits[:, self.model_config.hf_config.audio_pad_id] = (
+            logits.next_token_logits[:, self.model_config.hf_config.audio_pad_code] = (
                 -torch.inf
             )
 
@@ -283,12 +285,16 @@ class AdditionalSampleProcessMixin:
         is_audio_stage: torch.Tensor,
     ):
         # Text channel tokens handling
-        audio_bos_token_id = self.model_config.hf_config.audio_bos_token_id
-        audio_eos_token_id = self.model_config.hf_config.audio_eos_token_id
-        audio_pad_id = self.model_config.hf_config.audio_pad_id
+        audio_start_token_id = self.model_config.hf_config.audio_start_token_id
+        audio_end_token_id = self.model_config.hf_config.audio_end_token_id
+        audio_pad_code = self.model_config.hf_config.audio_pad_code
         channels = self.model_config.hf_config.n_vq
-        gen_delay_token_id = self.model_config.hf_config.gen_delay_token_id
-        gen_token_id = self.model_config.hf_config.gen_token_id
+        audio_assistant_delay_slot_token_id = (
+            self.model_config.hf_config.audio_assistant_delay_slot_token_id
+        )
+        audio_assistant_gen_slot_token_id = (
+            self.model_config.hf_config.audio_assistant_gen_slot_token_id
+        )
 
         # Vectorized update for column-0 tokens.
         # - needs_additional_steps <  channels => force gen_delay
@@ -297,12 +303,12 @@ class AdditionalSampleProcessMixin:
         col0 = next_token_ids[:, 0]
         col0 = torch.where(
             needs_additional_steps < channels,
-            col0.new_full((), gen_delay_token_id),
+            col0.new_full((), audio_assistant_delay_slot_token_id),
             col0,
         )
         col0 = torch.where(
             needs_additional_steps == channels,
-            col0.new_full((), audio_eos_token_id),
+            col0.new_full((), audio_end_token_id),
             col0,
         )
         next_token_ids[:, 0] = col0
@@ -316,7 +322,7 @@ class AdditionalSampleProcessMixin:
             is_audio_stage,
         )
         is_audio_stage = torch.where(
-            next_token_ids[:, 0] == audio_bos_token_id,
+            next_token_ids[:, 0] == audio_start_token_id,
             torch.ones_like(is_audio_stage),
             is_audio_stage,
         )
@@ -341,17 +347,17 @@ class AdditionalSampleProcessMixin:
         )
         post_audio_mask[needs_additional_steps == torch.iinfo(torch.int64).max] = True
         sampling_audio_mask = pre_audio_mask & post_audio_mask
-        next_token_ids[:, 1:][~sampling_audio_mask] = audio_pad_id
+        next_token_ids[:, 1:][~sampling_audio_mask] = audio_pad_code
 
         current_generation_step[
-            (next_token_ids[:, 0] == audio_bos_token_id)
-            | (next_token_ids[:, 0] == gen_token_id)
-            | (next_token_ids[:, 0] == gen_delay_token_id)
+            (next_token_ids[:, 0] == audio_start_token_id)
+            | (next_token_ids[:, 0] == audio_assistant_gen_slot_token_id)
+            | (next_token_ids[:, 0] == audio_assistant_delay_slot_token_id)
         ] += 1
-        current_generation_step[next_token_ids[:, 0] == audio_eos_token_id] = 0
+        current_generation_step[next_token_ids[:, 0] == audio_end_token_id] = 0
         needs_additional_steps[
             (needs_additional_steps == torch.iinfo(torch.int64).max)
-            & (next_token_ids[:, 0] == gen_delay_token_id)
+            & (next_token_ids[:, 0] == audio_assistant_delay_slot_token_id)
         ] = 0
         needs_additional_steps[
             needs_additional_steps != torch.iinfo(torch.int64).max

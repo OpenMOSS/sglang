@@ -116,10 +116,13 @@ class MossTTSDelayWithCodec(MossTTSDelayModel):
         super().__init__(config, quant_config=quant_config, prefix=prefix)
         self.config = config
         self.codec_cfg = config.get_codec_config()
-        self.audio_bos_token_id = config.audio_bos_token_id
-        self.audio_eos_token_id = config.audio_eos_token_id
-        self.audio_pad_id = config.audio_pad_id
-        self.audio_token_id = config.audio_token_id
+        self.audio_start_token_id = config.audio_start_token_id
+        self.audio_end_token_id = config.audio_end_token_id
+        self.audio_pad_code = config.audio_pad_code
+        self.audio_user_slot_token_id = config.audio_user_slot_token_id
+        self.audio_assistant_gen_slot_token_id = (
+            config.audio_assistant_gen_slot_token_id
+        )
         self.channels = config.channels
         self.n_vq = config.n_vq
         if self.pp_group.is_first_rank or self.pp_group.is_last_rank:
@@ -160,13 +163,22 @@ class MossTTSDelayWithCodec(MossTTSDelayModel):
         indices: List[int],
     ) -> torch.Tensor:
         audio_embeddings = []
-        for item in items:
+        for idx, item in enumerate(items):
             features = (
                 item.feature if item.feature.dim() == 2 else item.feature.unsqueeze(0)
             )
             feature_attention_mask = item.model_specific_data.get(
                 "feature_attention_mask",
-                torch.ones(features.shape, dtype=torch.bool, device=features.device),
+                torch.full(
+                    (features.shape[0],),
+                    features.shape[1],
+                    dtype=torch.long,
+                    device=features.device,
+                ),
+            )
+            continuation_feature = item.model_specific_data.get(
+                "continuation_feature",
+                None,
             )
             for i in range(features.shape[0]):
                 valid_len = int(feature_attention_mask[i].sum().item())
@@ -175,13 +187,34 @@ class MossTTSDelayWithCodec(MossTTSDelayModel):
                     feature.unsqueeze(0).unsqueeze(0), return_dict=True
                 )
                 # (time, codebooks)
-                audio_codes = enc.audio_codes.squeeze(1).transpose(0, 1)[:, : self.n_vq]
+                audio_codes = enc.audio_codes.squeeze(1).transpose(0, 1)[
+                    : enc.audio_codes_lengths, : self.n_vq
+                ]
                 audio_codes = self.apply_delay_pattern(
-                    audio_codes, pad_id=self.audio_pad_id
+                    audio_codes, pad_id=self.audio_pad_code
                 )
-                audio_codes = F.pad(audio_codes, (1, 0), value=self.audio_token_id)
+                audio_codes = F.pad(
+                    audio_codes, (1, 0), value=self.audio_user_slot_token_id
+                )
                 audio_embed = self._prepare_multi_modal_inputs(audio_codes)
                 audio_embeddings.append(audio_embed)
+            if continuation_feature is not None:
+                continuation_feature = continuation_feature.to(self.codec_model.device)
+                cont_enc = self.codec_model.encode(
+                    continuation_feature.unsqueeze(0).unsqueeze(0), return_dict=True
+                )
+                cont_codes = cont_enc.audio_codes.squeeze(1).transpose(0, 1)[
+                    : cont_enc.audio_codes_lengths, : self.n_vq
+                ]  # (time, codebooks)
+                forward_batch.ref_audio_codes[indices[idx]] = cont_codes
+                cont_codes = self.apply_delay_pattern(
+                    cont_codes, pad_id=self.audio_pad_code
+                )[: -(self.n_vq - 1)]
+                cont_codes = F.pad(
+                    cont_codes, (1, 0), value=self.audio_assistant_gen_slot_token_id
+                )  # No delay pattern for continuation feature
+                cont_embed = self._prepare_multi_modal_inputs(cont_codes)
+                audio_embeddings.append(cont_embed)
         return torch.cat(audio_embeddings, dim=0)
 
     @torch.no_grad()
@@ -230,6 +263,7 @@ class MossTTSDelayWithCodec(MossTTSDelayModel):
         self,
         audio_code: torch.Tensor,
         forward_batch: ForwardBatch,
+        idx: int,
     ) -> list[torch.Tensor]:
         if (
             audio_code is None
@@ -250,7 +284,7 @@ class MossTTSDelayWithCodec(MossTTSDelayModel):
         # Channel 0 carries BOS/EOS markers; codec codebooks are in [1:].
         text_token = audio_code[:, 0]
 
-        bos_pos = (text_token == self.audio_bos_token_id).nonzero(as_tuple=False)
+        bos_pos = (text_token == self.audio_start_token_id).nonzero(as_tuple=False)
         if bos_pos.numel() == 0:
             bos_idx = 0
             start = 1
@@ -258,7 +292,7 @@ class MossTTSDelayWithCodec(MossTTSDelayModel):
             bos_idx = int(bos_pos[0].item())
             start = bos_idx + 1
 
-        eos_pos = (text_token[start:] == self.audio_eos_token_id).nonzero(
+        eos_pos = (text_token[start:] == self.audio_end_token_id).nonzero(
             as_tuple=False
         )
         if eos_pos.numel() == 0:
@@ -269,13 +303,24 @@ class MossTTSDelayWithCodec(MossTTSDelayModel):
         payload = audio_code[start:end, 1:]
         if payload.numel() == 0 or payload.shape[0] < payload.shape[1]:
             return torch.zeros(1)
-
         normal = self.apply_de_delay_pattern(payload).to(self.codec_model.device)
+        ref_audio_length = None
+        if (
+            forward_batch.ref_audio_codes is not None
+            and forward_batch.ref_audio_codes[idx] is not None
+        ):
+            ref_audio_length = (
+                forward_batch.ref_audio_codes[idx].shape[0]
+                * self.codec_cfg.downsample_rate
+            )
+            normal = torch.concat([forward_batch.ref_audio_codes[idx], normal], dim=0)
         audio = self.codec_model.decode(
             normal.to(self.codec_model.device).transpose(0, 1),
             return_dict=True,
             chunk_duration=8,
         ).audio.squeeze(0)
+        if ref_audio_length is not None:
+            audio = audio[:, ref_audio_length:]
         return audio.detach().cpu()
 
     def batch_decode(
@@ -286,8 +331,8 @@ class MossTTSDelayWithCodec(MossTTSDelayModel):
         if audio_codes is None or len(audio_codes) == 0:
             return None
         audio_wavs = []
-        for audio_code in audio_codes:
-            audio_wav = self.decode(audio_code, forward_batch)
+        for idx, audio_code in enumerate(audio_codes):
+            audio_wav = self.decode(audio_code, forward_batch, idx)
             audio_wavs.append(
                 (audio_wav, self.codec_model.sampling_rate)
                 if audio_wav is not None
@@ -395,4 +440,14 @@ class MossTTSDelayWithCodec(MossTTSDelayModel):
                     logger.warning(f"Parameter {name} not found in params_dict")
 
 
-EntryClass = MossTTSDelayWithCodec
+class MossTTSDdelayWithCodec(MossTTSDelayWithCodec):
+    def __init__(
+        self,
+        config: MossTTSDelayWithCodecConfig,
+        quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
+    ) -> None:
+        super().__init__(config, quant_config=quant_config, prefix=prefix)
+
+
+EntryClass = [MossTTSDelayWithCodec, MossTTSDdelayWithCodec]

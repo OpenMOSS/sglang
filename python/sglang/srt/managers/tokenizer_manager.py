@@ -714,8 +714,8 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
         if self.mm_processor and (
             obj.contains_mm_input()
             or (
-                self.model_config.hf_config.architectures[0]
-                in ["MossTTSDWithCodec", "MossTTSDelayWithCodec"]
+                self.server_args.delay_pattern
+                and self.is_audio_gen
                 and input_text is not None
             )
         ):

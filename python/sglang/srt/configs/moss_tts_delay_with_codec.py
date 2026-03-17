@@ -55,14 +55,14 @@ class MossTTSDelayWithCodecConfig(PretrainedConfig):
         else:
             self.codec_config = MossAudioTokenizerConfig()
 
-        self.audio_bos_token_id = audio_start_token_id
-        self.audio_eos_token_id = audio_end_token_id
-        self.audio_pad_id = audio_pad_code
-        self.audio_token_id = audio_user_slot_token_id
+        self.audio_start_token_id = audio_start_token_id
+        self.audio_end_token_id = audio_end_token_id
+        self.audio_pad_code = audio_pad_code
+        self.audio_user_slot_token_id = audio_user_slot_token_id
         self.audio_vocab_size = audio_vocab_size
         self.eos_token_id = eos_token_id
-        self.gen_delay_token_id = audio_assistant_delay_slot_token_id
-        self.gen_token_id = audio_assistant_gen_slot_token_id
+        self.audio_assistant_delay_slot_token_id = audio_assistant_delay_slot_token_id
+        self.audio_assistant_gen_slot_token_id = audio_assistant_gen_slot_token_id
         self.hidden_size = hidden_size
         self.initializer_range = initializer_range
         self.n_vq = n_vq

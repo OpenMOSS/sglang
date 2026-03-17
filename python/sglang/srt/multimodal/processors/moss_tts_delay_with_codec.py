@@ -1,6 +1,10 @@
 import re
 
-from sglang.srt.models.moss_tts_delay_with_codec import MossTTSDelayWithCodec
+from sglang.srt.managers.schedule_batch import Modality
+from sglang.srt.models.moss_tts_delay_with_codec import (
+    MossTTSDdelayWithCodec,
+    MossTTSDelayWithCodec,
+)
 from sglang.srt.multimodal.processors.base_processor import (
     BaseMultimodalProcessor,
     MultimodalSpecialTokens,
@@ -44,6 +48,13 @@ class MossTTSDelayWithCodecMultimodalProcessor(BaseMultimodalProcessor):
             audio_token_regex=self.AUDIO_TOKEN_REGEX,
             audio_token_id=self.audio_token_id,
         ).build(_processor)
+
+        self.ATTR_NAME_TO_MODALITY.update(
+            {
+                "feature_attention_mask": Modality.AUDIO,
+                "continuation_feature": Modality.AUDIO,
+            }
+        )
 
     @staticmethod
     def normalize_text(text: str) -> str:
@@ -179,6 +190,192 @@ class MossTTSDelayWithCodecMultimodalProcessor(BaseMultimodalProcessor):
             text = text.replace("{reference}", references)
         else:
             text = text.replace("{reference}", str(None))
+
+        base_output = self.load_mm_data(
+            prompt=text,
+            audio_data=audio_data,
+            multimodal_tokens=self.mm_tokens,
+            audio_sample_rate=self.AUDIO_SAMPLE_RATE,
+        )
+
+        if base_output is None:
+            return None
+
+        mm_items, input_ids, ret = self.process_and_combine_mm_data(
+            base_output, self.mm_tokens, use_forced_processor=True
+        )
+
+        return {
+            "mm_items": mm_items,
+            "input_ids": input_ids.tolist(),
+            "audio_token_id": self.audio_token_id,
+        }
+
+
+class MossTTSDdelayWithCodecMultimodalProcessor(
+    MossTTSDelayWithCodecMultimodalProcessor
+):
+    models = [MossTTSDdelayWithCodec]
+
+    def __init__(self, hf_config, server_args, _processor, *args, **kwargs):
+        super().__init__(hf_config, server_args, _processor, *args, **kwargs)
+        self.template = """<user_inst>
+- Reference(s):
+{reference}
+- Instruction:
+{instruction}
+- Tokens:
+None
+- Quality:
+{quality}
+- Sound Event:
+{sound_event}
+- Ambient Sound:
+{ambient_sound}
+- Language:
+{language}
+- Scene:
+{scene}
+- Text:
+{text}
+</user_inst>"""
+        self.NORMALIZE_TEXT_REGEX = re.compile(r"\$\{normalize_text\}")
+
+    @staticmethod
+    def normalize_text(text: str) -> str:
+        text = re.sub(r"\[(\d+)\]", r"[S\1]", text)
+
+        remove_chars = "【】《》（）『』「」" '"-_“”～~‘’'
+
+        segments = re.split(r"(?=\[S\d+\])", text.replace("\n", " "))
+        processed_parts = []
+
+        for seg in segments:
+            seg = seg.strip()
+            if not seg:
+                continue
+
+            m = re.match(r"^(\[S\d+\])\s*(.*)", seg)
+            tag, content = m.groups() if m else ("", seg)
+
+            content = re.sub(f"[{re.escape(remove_chars)}]", "", content)
+            content = re.sub(r"哈{2,}", "[笑]", content)
+            content = re.sub(
+                r"\b(ha(\s*ha)+)\b", "[laugh]", content, flags=re.IGNORECASE
+            )
+
+            content = content.replace("——", "，")
+            content = content.replace("……", "，")
+            content = content.replace("...", "，")
+            content = content.replace("⸺", "，")
+            content = content.replace("―", "，")
+            content = content.replace("—", "，")
+            content = content.replace("…", "，")
+
+            internal_punct_map = str.maketrans(
+                {"；": "，", ";": ",", "：": "，", ":": ",", "、": "，"}
+            )
+            content = content.translate(internal_punct_map)
+            content = content.strip()
+
+            content = re.sub(r"([，。？！,.?!])[，。？！,.?!]+", r"\1", content)
+
+            if len(content) > 1:
+                last_ch = (
+                    "。"
+                    if content[-1] == "，"
+                    else ("." if content[-1] == "," else content[-1])
+                )
+                body = content[:-1].replace("。", "，")
+                content = body + last_ch
+
+            processed_parts.append({"tag": tag, "content": content})
+
+        if not processed_parts:
+            return ""
+
+        merged_lines = []
+        current_tag = processed_parts[0]["tag"]
+        current_content = [processed_parts[0]["content"]]
+
+        for part in processed_parts[1:]:
+            if part["tag"] == current_tag and current_tag:
+                current_content.append(part["content"])
+            else:
+                merged_lines.append(f"{current_tag}{''.join(current_content)}".strip())
+                current_tag = part["tag"]
+                current_content = [part["content"]]
+
+        merged_lines.append(f"{current_tag}{''.join(current_content)}".strip())
+
+        return "".join(merged_lines).replace("‘", "'").replace("’", "'")
+
+    async def process_mm_data_async(
+        self,
+        audio_data,
+        input_text,
+        **kwargs,
+    ):
+        # Extract tokens from input_text using TOKEN_REGEX
+        instruction = None
+        ambient_sound = None
+        normalize_text_flag = False
+        if input_text:
+            normalize_text_match = self.NORMALIZE_TEXT_REGEX.match(input_text)
+            if normalize_text_match:
+                normalize_text_flag = True
+                input_text = self.NORMALIZE_TEXT_REGEX.sub("", input_text, count=1)
+            instruction_match = self.INSTRUCTION_REGEX.match(input_text)
+            if instruction_match:
+                instruction = instruction_match.group(1)
+                input_text = self.INSTRUCTION_REGEX.sub("", input_text, count=1)
+
+            ambient_sound_match = self.AMBIENT_SOUND_REGEX.match(input_text)
+            if ambient_sound_match:
+                ambient_sound = ambient_sound_match.group(1)
+                input_text = self.AMBIENT_SOUND_REGEX.sub("", input_text, count=1)
+
+        input_text = (
+            ""
+            if input_text is None
+            else str(
+                self.normalize_text(input_text) if normalize_text_flag else input_text
+            )
+        )
+
+        text = (
+            self.template.replace("{instruction}", str(instruction))
+            .replace("{tokens}", str(None))
+            .replace("{volume}", str(None))
+            .replace("{quality}", str(None))
+            .replace("{sound_event}", str(None))
+            .replace("{ambient_sound}", str(ambient_sound))
+            .replace("{language}", str(None))
+            .replace("{scene}", "None")
+            .replace("{text}", str(input_text))
+        )
+
+        if audio_data is not None:
+            reference_list = []
+            for i, _ in enumerate(audio_data):
+                content = f"[S{i+1}]:\n{self.AUDIO_TOKEN}"
+                reference_list.append(content)
+            references = "\n".join(reference_list)
+            text = text.replace("{reference}", references)
+        else:
+            reference_list = []
+            speaker_indices = sorted(
+                {
+                    int(match.group(1)) - 1
+                    for match in re.finditer(r"\[S(\d+)\]", input_text)
+                    if int(match.group(1)) > 0
+                }
+            )
+            for speaker_idx in speaker_indices:
+                reference_list.append(f"[S{speaker_idx + 1}]: None")
+
+            references = "\n".join(reference_list)
+            text = text.replace("{reference}", references)
 
         base_output = self.load_mm_data(
             prompt=text,

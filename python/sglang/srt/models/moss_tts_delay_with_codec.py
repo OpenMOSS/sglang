@@ -187,7 +187,9 @@ class MossTTSDelayWithCodec(MossTTSDelayModel):
                 valid_len = int(feature_attention_mask[i].sum().item())
                 feature = features[i][:valid_len]
                 enc = self.codec_model.encode(
-                    feature.unsqueeze(0).unsqueeze(0), return_dict=True
+                    feature.unsqueeze(0).unsqueeze(0),
+                    return_dict=True,
+                    chunk_duration=10,
                 )
                 # (time, codebooks)
                 audio_codes = enc.audio_codes.squeeze(1).transpose(0, 1)[
@@ -204,7 +206,9 @@ class MossTTSDelayWithCodec(MossTTSDelayModel):
             if continuation_feature is not None:
                 continuation_feature = continuation_feature.to(self.codec_model.device)
                 cont_enc = self.codec_model.encode(
-                    continuation_feature.unsqueeze(0).unsqueeze(0), return_dict=True
+                    continuation_feature.unsqueeze(0).unsqueeze(0),
+                    return_dict=True,
+                    chunk_duration=10,
                 )
                 cont_codes = cont_enc.audio_codes.squeeze(1).transpose(0, 1)[
                     : cont_enc.audio_codes_lengths, : self.n_vq

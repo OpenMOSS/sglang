@@ -123,6 +123,9 @@ class MossTTSDelayWithCodec(MossTTSDelayModel):
         self.audio_assistant_gen_slot_token_id = (
             config.audio_assistant_gen_slot_token_id
         )
+        self.audio_assistant_delay_slot_token_id = (
+            config.audio_assistant_delay_slot_token_id
+        )
         self.channels = config.channels
         self.n_vq = config.n_vq
         if self.pp_group.is_first_rank or self.pp_group.is_last_rank:
@@ -259,6 +262,55 @@ class MossTTSDelayWithCodec(MossTTSDelayModel):
             tokens[:, i] = delayed_tokens[i : i + tokens.shape[0], i]
         return tokens
 
+    def _resolve_audio_payload_bounds(
+        self, text_token: torch.Tensor
+    ) -> tuple[int, int] | None:
+        bos_pos = (text_token == self.audio_start_token_id).nonzero(as_tuple=False)
+        if bos_pos.numel() == 0:
+            assistant_gen_slot = (
+                text_token == self.audio_assistant_gen_slot_token_id
+            ).nonzero(as_tuple=False)
+            if assistant_gen_slot.numel() == 0:
+                return None
+            fallback_start_idx = int(assistant_gen_slot[0].item())
+            if fallback_start_idx < 0:
+                return None
+            start = fallback_start_idx
+        else:
+            start = int(bos_pos[0].item()) + 1
+
+        eos_pos = (text_token[start:] == self.audio_end_token_id).nonzero(
+            as_tuple=False
+        )
+        if eos_pos.numel() == 0:
+            end_candidates: list[int] = []
+
+            assistant_gen_slot = (
+                text_token[start:] == self.audio_assistant_gen_slot_token_id
+            ).nonzero(as_tuple=False)
+            if assistant_gen_slot.numel() > 0:
+                end_candidates.append(start + int(assistant_gen_slot[-1].item()))
+
+            assistant_delay_slot = (
+                text_token[start:] == self.audio_assistant_delay_slot_token_id
+            ).nonzero(as_tuple=False)
+            if assistant_delay_slot.numel() > 0:
+                end_candidates.append(start + int(assistant_delay_slot[-1].item()))
+
+            if not end_candidates:
+                return None
+
+            # Keep the final slot row inside payload when EOS is absent.
+            end = max(end_candidates) + 1
+        else:
+            end = start + int(eos_pos[0].item())
+
+        if (
+            end <= start + self.n_vq
+        ):  # Need at least one row of payload after delay pattern
+            return None
+        return start, end
+
     def decode(
         self,
         audio_code: torch.Tensor,
@@ -284,21 +336,11 @@ class MossTTSDelayWithCodec(MossTTSDelayModel):
         # Channel 0 carries BOS/EOS markers; codec codebooks are in [1:].
         text_token = audio_code[:, 0]
 
-        bos_pos = (text_token == self.audio_start_token_id).nonzero(as_tuple=False)
-        if bos_pos.numel() == 0:
-            bos_idx = 0
-            start = 1
-        else:
-            bos_idx = int(bos_pos[0].item())
-            start = bos_idx + 1
+        payload_bounds = self._resolve_audio_payload_bounds(text_token)
+        if payload_bounds is None:
+            return torch.zeros(1)
 
-        eos_pos = (text_token[start:] == self.audio_end_token_id).nonzero(
-            as_tuple=False
-        )
-        if eos_pos.numel() == 0:
-            end = audio_code.shape[0]
-        else:
-            end = start + int(eos_pos[0].item())
+        start, end = payload_bounds
 
         payload = audio_code[start:end, 1:]
         if payload.numel() == 0 or payload.shape[0] < payload.shape[1]:

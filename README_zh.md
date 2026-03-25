@@ -10,15 +10,21 @@
 > 说明：当前仓库**不包含**部分 `fuse` / `request` / `inference` 脚本。
 > 可以直接使用文中的外部脚本链接运行，或单独下载后使用。
 
-## 来源
+## 目录
 
-- [MOSS-TTS README_zh](https://github.com/OpenMOSS/MOSS-TTS/blob/main/README_zh.md)
-- [MOSS-TTSD README_zh](https://github.com/OpenMOSS/MOSS-TTSD/blob/main/README_zh.md)
-- [MOSS-TTSD v0.7 README_zh](https://github.com/OpenMOSS/MOSS-TTSD/blob/main/legacy/v0.7/README_zh.md)
+- [MOSS-TTS（Delay）/ MOSS-SoundEffect](#moss-tts-delay-soundeffect)
+- [MOSS-TTSD v1.0](#moss-ttsd-v10)
+- [MOSS-TTSD v0.7](#moss-ttsd-v07)
+
+<a id="moss-tts-delay-soundeffect"></a>
 
 ## MOSS-TTS（Delay）/ MOSS-SoundEffect
 
+来源：[MOSS-TTS README_zh](https://github.com/OpenMOSS/MOSS-TTS/blob/main/README_zh.md)
+
 MOSS-TTS（Delay）支持使用 OpenMOSS 深度扩展的 [SGLang](https://github.com/OpenMOSS/sglang) 运行融合后的 MOSS-TTS 与 MOSS-Audio-Tokenizer 模型，实现面向音频生成的 **高效推理**。
+
+**单并发端到端吞吐（在 RTX 4090 上测得）：** 45 token/s
 
 ### 1) 安装 SGLang
 
@@ -119,9 +125,15 @@ jq -r '.text' response.json | base64 -d -i > output.wav
 
 ---
 
+<a id="moss-ttsd-v10"></a>
+
 ## MOSS-TTSD v1.0
 
+来源：[MOSS-TTSD README_zh](https://github.com/OpenMOSS/MOSS-TTSD/blob/main/README_zh.md)
+
 MOSS-TTSD v1.0 支持使用 OpenMOSS 深度扩展的 [SGLang](https://github.com/OpenMOSS/sglang) 运行融合后的 MOSS-TTSD 与 MOSS-Audio-Tokenizer 模型，实现面向音频生成的**高效推理**。
+
+**单并发端到端吞吐（在 RTX 4090 上测得）：** 43.5 token/s
 
 ### 1) 获取对应 SGLang 分支
 
@@ -204,7 +216,13 @@ python scripts/request_sglang_generation.py
 
 ---
 
+<a id="moss-ttsd-v07"></a>
+
 ## MOSS-TTSD v0.7
+
+来源：[MOSS-TTSD v0.7 README_zh](https://github.com/OpenMOSS/MOSS-TTSD/blob/main/legacy/v0.7/README_zh.md)
+
+**单并发端到端吞吐（在 RTX 4090 上测得）：** 140 token/s
 
 ### 1) 获取对应 SGLang 分支
 

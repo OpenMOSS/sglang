@@ -10,15 +10,21 @@ This repository provides SGLang support for the **MOSS-TTS Family**, covering th
 > Note: This repository does **not** include some `fuse` / `request` / `inference` scripts.
 > You can use the external script links in this document directly, or download those scripts separately before running them.
 
-## Sources
+## Contents
 
-- [MOSS-TTS README](https://github.com/OpenMOSS/MOSS-TTS/blob/main/README.md)
-- [MOSS-TTSD README](https://github.com/OpenMOSS/MOSS-TTSD/blob/main/README.md)
-- [MOSS-TTSD v0.7 README](https://github.com/OpenMOSS/MOSS-TTSD/blob/main/legacy/v0.7/README.md)
+- [MOSS-TTS (Delay) / MOSS-SoundEffect](#moss-tts-delay-soundeffect)
+- [MOSS-TTSD v1.0](#moss-ttsd-v10)
+- [MOSS-TTSD v0.7](#moss-ttsd-v07)
+
+<a id="moss-tts-delay-soundeffect"></a>
 
 ## MOSS-TTS (Delay) / MOSS-SoundEffect
 
+Source: [MOSS-TTS README](https://github.com/OpenMOSS/MOSS-TTS/blob/main/README.md)
+
 MOSS-TTS (Delay) supports running the fused MOSS-TTS and MOSS-Audio-Tokenizer model with the deeply extended [SGLang](https://github.com/OpenMOSS/sglang) from OpenMOSS, enabling efficient inference for audio generation.
+
+**Single-concurrency end-to-end throughput (measured on RTX 4090):** 45 token/s
 
 ### 1) Install SGLang
 
@@ -119,9 +125,15 @@ jq -r '.text' response.json | base64 -d -i > output.wav
 
 ---
 
+<a id="moss-ttsd-v10"></a>
+
 ## MOSS-TTSD v1.0
 
+Source: [MOSS-TTSD README](https://github.com/OpenMOSS/MOSS-TTSD/blob/main/README.md)
+
 MOSS-TTSD v1.0 supports running the fused MOSS-TTSD and MOSS-Audio-Tokenizer model with the deeply extended [SGLang](https://github.com/OpenMOSS/sglang) from OpenMOSS, enabling efficient inference for audio generation.
+
+**Single-concurrency end-to-end throughput (measured on RTX 4090):** 43.5 token/s
 
 ### 1) Get the corresponding SGLang branch
 
@@ -204,7 +216,13 @@ If you need to change the reference audio, input text, sampling parameters, or s
 
 ---
 
+<a id="moss-ttsd-v07"></a>
+
 ## MOSS-TTSD v0.7
+
+Source: [MOSS-TTSD v0.7 README](https://github.com/OpenMOSS/MOSS-TTSD/blob/main/legacy/v0.7/README.md)
+
+**Single-concurrency end-to-end throughput (measured on RTX 4090):** 140 token/s
 
 ### 1) Get the corresponding SGLang branch
 

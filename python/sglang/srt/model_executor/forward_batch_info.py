@@ -390,7 +390,7 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
     needs_additional_steps: torch.Tensor = None
     unfinished_sequences: torch.Tensor = None
 
-    # For MOSS-TTSD-v0.7
+    # For MOSS-TTSD-v0.7 and continuation of MOSS-TTS
     ref_audio_codes: Optional[List[torch.Tensor]] = None
 
     # For MOSS-TTS sampling
@@ -554,18 +554,18 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
         # For delay-pattern sampling
         if model_runner.server_args.delay_pattern:
             ret.current_generation_step = batch.current_generation_step
-            ret.truncated_input_ids = batch.truncated_input_ids
             ret.needs_additional_steps = batch.needs_additional_steps
             ret.unfinished_sequences = batch.unfinished_sequences
-            if (
-                model_runner.model_config.hf_config.architectures[0]
-                == "MossTTSDWithCodec"
-            ):
+            if model_runner.model_config.is_audio_gen:
                 ret.ref_audio_codes = batch.ref_audio_codes
-            elif (
-                model_runner.model_config.hf_config.architectures[0]
-                == "MossTTSDelayWithCodec"
-            ):
+            if model_runner.model_config.hf_config.architectures[0] in [
+                "MossTTSDWithCodec"
+            ]:
+                ret.truncated_input_ids = batch.truncated_input_ids
+            if model_runner.model_config.hf_config.architectures[0] in [
+                "MossTTSDelayWithCodec",
+                "MossTTSDdelayWithCodec",
+            ]:
                 ret.is_audio_stage = batch.is_audio_stage
 
         if ret.forward_mode.is_audio_decode():

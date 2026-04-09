@@ -231,6 +231,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
         self.is_generation = self.model_config.is_generation
         self.is_image_gen = self.model_config.is_image_gen
         self.is_audio_gen = self.model_config.is_audio_gen
+        self.is_always_process_mm_data = self.model_config.is_always_process_mm_data
         self.context_len = self.model_config.context_len
         self.image_token_id = self.model_config.image_token_id
         self.max_req_input_len = None  # Will be set later in engine.py
@@ -703,7 +704,12 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
 
             # For audio-only requests (e.g., Whisper), text may be empty.
             # The multimodal processor will provide input_ids later.
-            if not input_text and self.mm_processor and obj.contains_mm_input():
+            if (
+                not input_text
+                and self.mm_processor
+                and obj.contains_mm_input()
+                and not self.is_always_process_mm_data
+            ):
                 # Use empty placeholder - multimodal processor will override
                 input_ids = []
             else:
@@ -713,11 +719,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
 
         if self.mm_processor and (
             obj.contains_mm_input()
-            or (
-                self.server_args.delay_pattern
-                and self.is_audio_gen
-                and input_text is not None
-            )
+            or (self.is_always_process_mm_data and input_text is not None)
         ):
             if obj.image_data is not None and not isinstance(obj.image_data, list):
                 obj.image_data = [obj.image_data]

@@ -242,6 +242,68 @@ class Qwen3Detector(BaseReasoningFormatDetector):
         )
 
 
+class Qwen3InstructionInjectionDetector(Qwen3Detector):
+
+    STOP_INSTRUCTION = (
+        "Considering the limited time by the user, "
+        "I have to give the solution based on the thinking directly now."
+    )
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._reasoning_accum = ""
+        self._instruction_stripped = False
+
+    def _strip_injected_instruction(self, reasoning_text: str) -> str:
+        idx = reasoning_text.find(self.STOP_INSTRUCTION)
+        if idx != -1:
+            return reasoning_text[:idx].rstrip()
+        return reasoning_text
+
+    def detect_and_parse(self, text: str) -> StreamingParseResult:
+        result = super().detect_and_parse(text)
+        if result.reasoning_text:
+            result.reasoning_text = self._strip_injected_instruction(
+                result.reasoning_text
+            )
+        return result
+
+    def parse_streaming_increment(self, new_text: str) -> StreamingParseResult:
+        result = super().parse_streaming_increment(new_text)
+
+        if not result.reasoning_text or self._instruction_stripped:
+            if self._instruction_stripped and result.reasoning_text:
+                result.reasoning_text = ""
+            return result
+
+        self._reasoning_accum += result.reasoning_text
+
+        idx = self._reasoning_accum.find(self.STOP_INSTRUCTION)
+        if idx != -1:
+            self._instruction_stripped = True
+            already_emitted = len(self._reasoning_accum) - len(result.reasoning_text)
+            keep_end = idx
+            chars_to_emit = max(0, keep_end - already_emitted)
+            result.reasoning_text = result.reasoning_text[:chars_to_emit].rstrip()
+            return result
+
+        prefix = self.STOP_INSTRUCTION[:1]
+        for start in range(len(self._reasoning_accum) - 1, -1, -1):
+            tail = self._reasoning_accum[start:]
+            if self.STOP_INSTRUCTION.startswith(tail):
+                safe_end = start
+                already_emitted = len(self._reasoning_accum) - len(
+                    result.reasoning_text
+                )
+                chars_to_emit = max(0, safe_end - already_emitted)
+                if chars_to_emit < len(result.reasoning_text):
+                    held_back = result.reasoning_text[chars_to_emit:]
+                    result.reasoning_text = result.reasoning_text[:chars_to_emit]
+                return result
+
+        return result
+
+
 class KimiDetector(BaseReasoningFormatDetector):
     """
     Detector for Kimi Thinking model.
@@ -468,6 +530,7 @@ class ReasoningParser:
         "step3p5": DeepSeekR1Detector,
         "nemotron_3": Nemotron3Detector,
         "interns1": Qwen3Detector,
+        "qwen3-instruction-injection": Qwen3InstructionInjectionDetector,
     }
 
     def __init__(

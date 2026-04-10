@@ -171,11 +171,15 @@ class MossAudioMultimodalProcessor(BaseMultimodalProcessor):
 
     def _build_prompt_for_mm(self, input_text: str, audio_data) -> str:
         prompt_text = self.AUDIO_TOKEN_REGEX.sub("", input_text or "").strip()
-        if not audio_data:
-            return prompt_text
 
-        audio_prefix = "\n".join([self.AUDIO_TOKEN] * len(audio_data))
-        user_content = f"{audio_prefix}\n{prompt_text}" if prompt_text else audio_prefix
+        if audio_data:
+            audio_prefix = "\n".join([self.AUDIO_TOKEN] * len(audio_data))
+            user_content = (
+                f"{audio_prefix}\n{prompt_text}" if prompt_text else audio_prefix
+            )
+        else:
+            user_content = prompt_text
+
         return (
             "<|im_start|>system\n"
             "You are a helpful assistant.<|im_end|>\n"

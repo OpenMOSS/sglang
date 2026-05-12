@@ -1,7 +1,8 @@
 [English](README.md) | [简体中文](README_zh.md)
 
-本仓库提供 **MOSS-TTS Family** 的 SGLang 支持，当前覆盖以下模型：
+本仓库提供 **MOSS-TTS Family** 和 **MOSS-Audio** 的 SGLang 支持，当前覆盖以下模型：
 
+- **MOSS-Audio**
 - **MOSS-TTS（Delay）**
 - **MOSS-SoundEffect**
 - **MOSS-TTSD v1.0**
@@ -12,9 +13,58 @@
 
 ## 目录
 
+- [MOSS-Audio](#moss-audio)
 - [MOSS-TTS（Delay）/ MOSS-SoundEffect](#moss-tts-delay-soundeffect)
 - [MOSS-TTSD v1.0](#moss-ttsd-v10)
 - [MOSS-TTSD v0.7](#moss-ttsd-v07)
+
+<a id="moss-audio"></a>
+
+## MOSS-Audio
+
+来源：[MOSS-Audio README_zh](https://github.com/OpenMOSS/MOSS-Audio/blob/main/README_zh.md)
+
+完整使用指南：[moss_audio_usage_guide.md](https://github.com/OpenMOSS/MOSS-Audio/blob/main/moss_audio_usage_guide.md)
+
+MOSS-Audio 是 OpenMOSS 的音频理解模型，支持使用 OpenMOSS 深度扩展的 [SGLang](https://github.com/OpenMOSS/sglang) 运行。
+
+### 1) 安装 SGLang
+
+```bash
+# 1. 克隆 SGLang 仓库
+git clone https://github.com/OpenMOSS/sglang.git
+
+# 2. 安装 SGLang
+pip install -e ./sglang/python[all]
+
+# 3. (可选) 解决 SGLang 的 CuDNN 兼容性报错
+#    RuntimeError: CRITICAL WARNING: PyTorch 2.9.1 & CuDNN Compatibility Issue Detected
+pip install nvidia-cudnn-cu12==9.16.0.29
+```
+
+### 2) 启动服务
+
+```bash
+sglang serve --model-path /path/to/moss-audio-model --trust-remote-code
+```
+
+> **说明：** 模型权重自带多模态 chat template，无需额外配置模板。
+
+### 3) 发送生成请求
+
+```bash
+curl -X POST http://localhost:30000/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Describe the audio.",
+    "audio_data": "/path/to/audio.wav"
+  }'
+```
+
+- `text` 表示发送给模型的文本提示。
+- `audio_data` 表示用于理解的输入音频。
+
+---
 
 <a id="moss-tts-delay-soundeffect"></a>
 

@@ -136,6 +136,94 @@ class DeepSeekR1ThinkingBudgetLogitProcessor(ThinkingBudgetLogitProcessor):
     NEW_LINE_TOKEN_ID: int = 201
 
 
+class InstructionInjectionThinkingBudgetLogitProcessor(CustomLogitProcessor):
+
+    THINKING_START_TOKEN_ID: int
+    THINKING_END_TOKEN_ID: int
+    STOP_INSTRUCTION_IDS: List[int]
+
+    def __call__(self, logits, custom_param_list: list[dict[str, Any]]):
+        if custom_param_list is None or not custom_param_list:
+            return logits
+        for i, param_dict in enumerate(custom_param_list):
+            if param_dict is None:
+                continue
+
+            thinking_budget: int | None = param_dict.get("thinking_budget")
+
+            if (
+                thinking_budget is None
+                or not isinstance(thinking_budget, int)
+                or thinking_budget < 0
+            ):
+                continue
+
+            req: Req = param_dict.get("__req__")
+            cur_ids: list[int] = [*req.origin_input_ids, *req.output_ids]
+
+            if self.THINKING_START_TOKEN_ID not in cur_ids:
+                continue
+
+            if self.THINKING_END_TOKEN_ID in cur_ids:
+                continue
+
+            start_index = cur_ids.index(self.THINKING_START_TOKEN_ID)
+            num_tokens_after_start = len(cur_ids) - start_index - 1
+
+            if num_tokens_after_start < thinking_budget:
+                continue
+
+            injection_offset = num_tokens_after_start - thinking_budget
+
+            if injection_offset < len(self.STOP_INSTRUCTION_IDS):
+                forced_token = self.STOP_INSTRUCTION_IDS[injection_offset]
+                logits[i, :] = -float("inf")
+                logits[i, forced_token] = 0.0
+
+        return logits
+
+
+class Qwen3InstructionInjectionThinkingBudgetLogitProcessor(
+    InstructionInjectionThinkingBudgetLogitProcessor
+):
+    """Instruction-injection thinking budget for Qwen3 models.
+
+    Injects: "Considering the limited time by the user, I have to give the
+    solution based on the thinking directly now.\\n</think>\\n\\n"
+
+    Token IDs are pre-computed with the Qwen3 tokenizer.
+    """
+
+    THINKING_START_TOKEN_ID: int = 151667
+    THINKING_END_TOKEN_ID: int = 151668
+    STOP_INSTRUCTION_IDS: List[int] = [
+        82796,  # Considering
+        279,  # the
+        7199,  # limited
+        882,  # time
+        553,  # by
+        279,  # the
+        1196,  # user
+        11,  # ,
+        358,  # I
+        614,  # have
+        311,  # to
+        2968,  # give
+        279,  # the
+        6291,  # solution
+        3118,  # based
+        389,  # on
+        279,  # the
+        7274,  # thinking
+        5961,  # directly
+        1431,  # now
+        624,  # .\n
+        151668,  # </think>
+        198,  # \n
+        198,  # \n
+    ]
+
+
 # Adapted from DeepSeek's implementation: https://github.com/deepseek-ai/DeepSeek-OCR/blob/main/DeepSeek-OCR-master/DeepSeek-OCR-vllm/process/ngram_norepeat.py
 class DeepseekOCRNoRepeatNGramLogitProcessor(CustomLogitProcessor):
     """Block n-gram repetitions within a sliding window for DeepSeek-OCR outputs."""

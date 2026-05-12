@@ -1,7 +1,8 @@
 [English](README.md) | [简体中文](README_zh.md)
 
-This repository provides SGLang support for the **MOSS-TTS Family**, covering the following models:
+This repository provides SGLang support for the **MOSS-TTS Family** and **MOSS-Audio**, covering the following models:
 
+- **MOSS-Audio**
 - **MOSS-TTS (Delay)**
 - **MOSS-SoundEffect**
 - **MOSS-TTSD v1.0**
@@ -12,9 +13,58 @@ This repository provides SGLang support for the **MOSS-TTS Family**, covering th
 
 ## Contents
 
+- [MOSS-Audio](#moss-audio)
 - [MOSS-TTS (Delay) / MOSS-SoundEffect](#moss-tts-delay-soundeffect)
 - [MOSS-TTSD v1.0](#moss-ttsd-v10)
 - [MOSS-TTSD v0.7](#moss-ttsd-v07)
+
+<a id="moss-audio"></a>
+
+## MOSS-Audio
+
+Source: [MOSS-Audio README](https://github.com/OpenMOSS/MOSS-Audio/blob/main/README.md)
+
+Full usage guide: [moss_audio_usage_guide.md](https://github.com/OpenMOSS/MOSS-Audio/blob/main/moss_audio_usage_guide.md)
+
+MOSS-Audio is an OpenMOSS audio understanding model supported by the deeply extended [SGLang](https://github.com/OpenMOSS/sglang) from OpenMOSS.
+
+### 1) Install SGLang
+
+```bash
+# 1. Clone the SGLang repository
+git clone https://github.com/OpenMOSS/sglang.git
+
+# 2. Install SGLang
+pip install -e ./sglang/python[all]
+
+# 3. (Optional) Fix the SGLang CuDNN compatibility error
+#    RuntimeError: CRITICAL WARNING: PyTorch 2.9.1 & CuDNN Compatibility Issue Detected
+pip install nvidia-cudnn-cu12==9.16.0.29
+```
+
+### 2) Start the service
+
+```bash
+sglang serve --model-path /path/to/moss-audio-model --trust-remote-code
+```
+
+> **Note:** The model weights include a multimodal chat template, so no extra template configuration is needed.
+
+### 3) Send a generation request
+
+```bash
+curl -X POST http://localhost:30000/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Describe the audio.",
+    "audio_data": "/path/to/audio.wav"
+  }'
+```
+
+- `text` denotes the text prompt sent to the model.
+- `audio_data` denotes the input audio used for understanding.
+
+---
 
 <a id="moss-tts-delay-soundeffect"></a>
 

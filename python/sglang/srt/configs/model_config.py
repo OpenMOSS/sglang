@@ -186,6 +186,10 @@ class ModelConfig:
         )
         if self.is_audio_gen:
             self.is_multimodal = True
+        self.is_always_process_mm_data = (
+            enable_multimodal
+            and is_always_process_mm_data_model(self.hf_config.architectures)
+        )
         # TODO: requires further polishing
         self.is_image_understandable_model = enable_multimodal and hasattr(
             self.hf_config, "vision_config"
@@ -1326,6 +1330,7 @@ multimodal_model_archs = [
     "MiniCPMO",
     "MiniCPMV",
     "Mistral3ForConditionalGeneration",
+    "MossAudioModel",
     "MultiModalityCausalLM",
     "MllamaForConditionalGeneration",
     "NemotronH_Nano_VL_V2",
@@ -1403,6 +1408,18 @@ def is_audio_gen_model(model_architectures: List[str]):
         "MossTTSDdelayWithCodec",
     ]
     return any(arch in model_architectures for arch in audio_gen_model_archs)
+
+
+def is_always_process_mm_data_model(model_architectures: List[str]):
+    always_process_mm_data_model_archs = [
+        "MossAudioModel",
+        "MossTTSDWithCodec",
+        "MossTTSDelayWithCodec",
+        "MossTTSDdelayWithCodec",
+    ]
+    return any(
+        arch in model_architectures for arch in always_process_mm_data_model_archs
+    )
 
 
 def is_encoder_decoder_model(model_architectures: List[str]):
